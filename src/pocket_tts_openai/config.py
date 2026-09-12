@@ -35,6 +35,16 @@ def _env_int(env: dict[str, str], key: str, default: int) -> int:
         raise ValueError(f"{key} must be an integer, got: {raw!r}") from None
 
 
+def _env_float(env: dict[str, str], key: str, default: float) -> float:
+    raw = env.get(key, "")
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        raise ValueError(f"{key} must be a number, got: {raw!r}") from None
+
+
 @dataclass(frozen=True)
 class Config:
     host: str = "127.0.0.1"
@@ -65,6 +75,9 @@ class Config:
     stt_idle_unload_s: int = 300  # kill the sidecar after this long without an STT
     # request (reclaims its RAM); 0 = off, independent of idle_unload_s.
     stt_idle_poll_s: int = 30  # dedicated STT watchdog cadence
+    stt_min_duration_s: float = 1.2  # whisper.cpp drops audio under ~1.0-1.2 s;
+    # short uploads are time-stretched (slowed) to at least this many seconds
+    # before transcribing so sub-second clips are not silently lost; 0 = off.
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "Config":
@@ -100,4 +113,5 @@ class Config:
             stt_language=env.get("STTS_STT_LANGUAGE", "").strip(),
             stt_idle_unload_s=_env_int(env, "STTS_STT_IDLE_UNLOAD_S", 300),
             stt_idle_poll_s=_env_int(env, "STTS_STT_IDLE_POLL_S", 30),
+            stt_min_duration_s=_env_float(env, "STTS_STT_MIN_DURATION_S", 1.2),
         )

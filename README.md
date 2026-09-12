@@ -66,6 +66,14 @@ the container), `model` (`whisper-1`), plus optional `language`, `prompt`,
   token timestamps — best-effort, only in `verbose_json`).
 - `translations` always translates into **English** (`language` is dropped).
 
+Sub-second audio: whisper.cpp silently returns an empty transcript for clips
+under ~1.0–1.2 s (a short TTS round-trip like „hello“ otherwise comes back as
+`{"text": ""}`). Uploads under `STTS_STT_MIN_DURATION_S` are automatically
+time-stretched (slowed with ffmpeg `atempo`) to at least that floor before
+transcribing, so single-word clips transcribe instead of vanishing. Only
+sub-floor uploads pay the ffmpeg round-trip; normal audio is forwarded
+untouched. `STTS_STT_MIN_DURATION_S=0` disables the workaround.
+
 Powered by a persistent native `whisper-server` subprocess sidecar (default
 model `small`, ggml-small.bin ~466 MB multilingual, overridable via
 `STTS_STT_MODEL`). STT routes return **503** when STT is disabled or the
@@ -148,6 +156,7 @@ request after the eviction just blocks a moment while the sidecar re-spawns
 | `STTS_STT_LANGUAGE` | — | force transcription language (empty = auto-detect) |
 | `STTS_STT_IDLE_UNLOAD_S` | `300` | kill the sidecar after this many STT-idle seconds; `0` disables |
 | `STTS_STT_IDLE_POLL_S` | `30` | STT watchdog poll interval (seconds) |
+| `STTS_STT_MIN_DURATION_S` | `1.2` | whisper drops audio under ~1.0-1.2 s; sub-floor uploads are time-stretched to at least this many seconds (ffmpeg `atempo`) before transcribing; `0` disables |
 
 ## Container (Docker)
 

@@ -8,6 +8,9 @@ is tested without a real whisper.cpp binary.
 
 from __future__ import annotations
 
+import io
+import shutil
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -682,3 +685,79 @@ def test_model_filename_mapping():
     assert model_filename("small.q5_0") == "ggml-small.q5_0.bin"
     assert model_filename("ggml-base") == "ggml-base.bin"
     assert model_filename("ggml-base.bin") == "ggml-base.bin"
+
+
+# -- very short audio: time-stretch to the whisper floor -----------------------
+
+
+def _make_wav(duration_s: float, rate: int = 16000) -> bytes:
+    """16 kHz mono sine-wave WAV of the given length (stdlib only)."""
+    import math
+    import struct
+    import wave
+
+    n = int(rate * duration_s)
+    pcm = b"".join(
+        struct.pack("<h", int(6000 * math.sin(2 * math.pi * 220 * i / rate)))
+        for i in range(n)
+    )
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(pcm)
+    return buf.getvalue()
+
+
+def test_atempo_filter_composition():
+    from pocket_tts_openai.routes_stt import _atempo_filter
+
+    tempos = lambda f: [float(s.split("=")[1]) for s in f.split(",")]  # noqa: E731
+    # 1.67x longer (e.g. a 0.72 s clip up to a 1.2 s floor) -> single 0.6 tempo
+    assert tempos(_atempo_filter(1.67)) == pytest.approx([0.6], abs=1e-2)
+    # exactly 2x slower -> single atempo=0.5 stage
+    assert _atempo_filter(2.0) == "atempo=0.500000"
+    # 3x slower -> tempo 1/3 is below 0.5, so the period must chain two stages
+    assert _atempo_filter(3.0) == "atempo=0.5,atempo=0.666667"
+    # a single atempo of 0.5 halves speed; chaining 3 of them is 8x slower
+    assert _atempo_filter(8.0) == "atempo=0.5,atempo=0.5,atempo=0.500000"
+
+
+def test_stretch_short_audio_real_ffmpeg():
+    """End-to-end of the real stretch path (ffprobe + ffmpeg), without whisper.
+
+    Guards on ffmpeg presence: transient on machines without it, not a hard
+    dependency of the unit suite (GitHub runners ship it)."""
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        pytest.skip("ffmpeg/ffprobe not installed")
+    from pocket_tts_openai.routes_stt import _probe_duration, _stretch_short_audio
+
+    short = _make_wav(0.5)
+    probe = _probe_duration(short)
+    assert probe is not None and 0.4 < probe < 0.6
+    assert _probe_duration(b"this is definitely not audio") is None
+
+    cfg = Config(stt_enabled=True, stt_min_duration_s=1.2)
+    out = _stretch_short_audio(short, cfg)
+    assert out is not None
+    import wave as wave_mod
+
+    with wave_mod.open(io.BytesIO(out)) as w:
+        assert w.getframerate() == 16000
+        assert w.getnchannels() == 1
+        assert w.getsampwidth() == 2
+        assert w.getnframes() / w.getframerate() >= 1.2
+
+    # adequately long clips are never stretched, whatever we feed the hook
+    assert _stretch_short_audio(_make_wav(3.0), cfg) is None
+    # a zero floor disables the feature entirely
+    assert _stretch_short_audio(short, Config(stt_min_duration_s=0)) is None
+
+
+def test_stt_min_duration_env_parsing():
+    assert Config.from_env({}).stt_min_duration_s == 1.2
+    assert Config.from_env({"STTS_STT_MIN_DURATION_S": "0.8"}).stt_min_duration_s == pytest.approx(0.8)
+    assert Config.from_env({"STTS_STT_MIN_DURATION_S": "0"}).stt_min_duration_s == 0
+    with pytest.raises(ValueError):
+        Config.from_env({"STTS_STT_MIN_DURATION_S": "fast"})
