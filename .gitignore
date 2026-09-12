@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Virtual environments
+.venv/
+
+# OS artifacts
+.DS_Store
+
+# Local model/voice caches
+.cache/
