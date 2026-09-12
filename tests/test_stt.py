@@ -418,6 +418,83 @@ def test_start_fails_when_binary_missing():
     assert sidecar.ready is False
 
 
+def test_start_fails_fast_with_exit_code_and_diag_when_proc_dies():
+    """A `whisper-server` that dies before binding reports its exit code and
+    captured stderr immediately, instead of a bare Connection refused."""
+    cfg = Config(stt_enabled=True, stt_idle_unload_s=0)
+    clock = FakeClock(1000.0)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # never reachable: nothing is listening (the proc is already dead)
+        return httpx.Response(404)
+
+    http = httpx.Client(
+        transport=httpx.MockTransport(handler),
+        base_url=f"http://{cfg.stt_host}:{cfg.stt_port}",
+    )
+
+    def spawn():
+        dead = FakePopen(1000)
+        dead._exit_code = 3  # e.g. "error: failed to initialize whisper context"
+        return dead
+
+    sidecar = WhisperSidecar(
+        config=cfg, model_path="ggml-small.bin", http=http, spawn=spawn,
+        now=clock, startup_poll=0.0,
+    )
+    # Simulate what the drain thread would have captured from whisper's stderr.
+    sidecar._diag.append("error: failed to initialize whisper context")
+    assert sidecar.start() is False
+    hint = sidecar.last_error_hint()
+    assert "exited during startup (code 3)" in hint
+    assert "failed to initialize whisper context" in hint
+    assert sidecar.ready is False
+
+
+def test_start_ready_via_root_probe_when_no_health_endpoint():
+    """whisper.cpp v1.7.4 (the Dockerfile pin) has no /health route; a 404 on
+    /health must fall back to GET / (200 on both v1.7.4 and master)."""
+    cfg = Config(stt_enabled=True, stt_idle_unload_s=0)
+    clock = FakeClock(1000.0)
+    procs: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/":
+            return httpx.Response(200, text="whisper.cpp default page")
+        return httpx.Response(404)  # /health absent on v1.7.4
+
+    http = httpx.Client(
+        transport=httpx.MockTransport(handler),
+        base_url=f"http://{cfg.stt_host}:{cfg.stt_port}",
+    )
+    sidecar = WhisperSidecar(
+        config=cfg, model_path="ggml-small.bin", http=http,
+        spawn=lambda: FakePopen(1000 + len(procs)), now=clock, startup_poll=0.0,
+    )
+    assert sidecar.start() is True
+    assert sidecar.ready is True
+
+
+def test_start_not_ready_row_path_when_all_probes_404():
+    """Both /health and / returning 404 -> not ready (error stays instructive)."""
+    cfg = Config(stt_enabled=True, stt_idle_unload_s=0)
+    clock = FakeClock(1000.0)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404)
+
+    http = httpx.Client(
+        transport=httpx.MockTransport(handler),
+        base_url=f"http://{cfg.stt_host}:{cfg.stt_port}",
+    )
+    sidecar = WhisperSidecar(
+        config=cfg, model_path="ggml-small.bin", http=http,
+        spawn=lambda: FakePopen(1000), now=clock, startup_poll=0.0, startup_timeout=0.01,
+    )
+    assert sidecar.start() is False
+    assert "not ready" in sidecar.last_error_hint()
+
+
 def test_idle_no_eviction_before_window():
     cfg = Config(stt_enabled=True, stt_idle_unload_s=100)
     captured, procs = [], []

@@ -3,9 +3,12 @@ proxy OpenAI-formatted transcriptions to (see PLAN-STT.md / M6).
 
 whisper.cpp ships a native HTTP server binary (``examples/server``) that speaks
 multipart and returns OpenAI-shaped JSON, ``srt``/``vtt``/``text``, plus a
-``translate`` flag and ``GET /health``. We manage that process:
+``translate`` flag. We manage that process:
 
-- **start()** spawns it and waits for a healthy ``GET /health`` (bounded).
+- **start()** spawns it and waits until it is ready (bounded). Readiness is
+  probed with a version-agnostic signal: ``GET /health`` (200 ready, 503 still
+  loading) exists on whisper.cpp master, while the v1.7.4 the Dockerfile pins
+  only serves ``GET /`` — so a 404 from ``/health`` falls back to ``GET /``.
 - **ensure_started()** is the wake path: single-flight re-spawn + readiness
   poll, so a request after an idle eviction blocks briefly then succeeds
   (no 503 in the wake path).
@@ -14,6 +17,10 @@ multipart and returns OpenAI-shaped JSON, ``srt``/``vtt``/``text``, plus a
   ~100% of its RSS (the next request wakes it per §6 of the plan).
 - **watch()** is a crash watcher: if the process dies unexpectedly it attempts
   one supervised restart.
+
+The sidecar's combined stdout/stderr is drained into a bounded tail so a
+startup failure (missing model, port in use, missing shared lib) surfaces
+whisper's own error instead of a bare "Connection refused".
 
 The route layer (``routes_stt.py``) talks to a thin injectable HTTP client so
 tests can point at a stub ``whisper-server`` without a real binary.
@@ -25,6 +32,7 @@ import logging
 import subprocess
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -138,6 +146,10 @@ class WhisperSidecar:
     _last_activity: float = field(init=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _spawn_fn: "Callable[[], Any]" = field(init=False, repr=False)
+    # Bounded tail of the sidecar's combined stdout/stderr, so a startup
+    # failure is diagnosable (whisper-server prints the real reason to stderr).
+    _diag: deque[str] = field(default_factory=lambda: deque(maxlen=40), init=False, repr=False)
+    _diag_thread: threading.Thread | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.model_path = Path(self.model_path)
@@ -184,7 +196,13 @@ class WhisperSidecar:
     # -- process lifecycle --------------------------------------------------
 
     def _real_spawn(self) -> "Any":
-        """Production command: whisper-server bound to loopback with our model."""
+        """Production command: whisper-server bound to loopback with our model.
+
+        stdout/stderr are piped and drained into ``_diag`` (a bounded tail) so a
+        startup failure is diagnosable: instead of a bare "Connection refused"
+        the user sees whisper's own ``error: failed to initialize whisper
+        context`` / ``couldn't bind to server socket`` on stderr.
+        """
         cmd = [
             self.config.stt_bin,
             "--host", self.config.stt_host,
@@ -199,19 +217,50 @@ class WhisperSidecar:
         # here (native ggml CPU is the unconditional default).
         logger.info("starting whisper-server: %s", " ".join(cmd))
         try:
-            return subprocess.Popen(
+            proc = subprocess.Popen(
                 cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
         except OSError as exc:
             raise RuntimeError(
                 f"cannot start whisper-server ({self.config.stt_bin!r}): {exc}"
             ) from exc
+        self._diag.clear()
+        self._diag_thread = threading.Thread(
+            target=self._drain_output, args=(proc,), name="whisper-server-stderr", daemon=True
+        )
+        self._diag_thread.start()
+        return proc
+
+    def _drain_output(self, proc: "Any") -> None:
+        """Drain the sidecar's combined stdout/stderr into ``_diag`` (bounded).
+
+        Prevents the pipe from filling up (blocking the child) and keeps the
+        last lines around so a crash/startup failure is explainable.
+        """
+        if proc.stdout is None:  # pragma: no cover - real Popen always has one
+            return
+        try:
+            for raw in proc.stdout:
+                try:
+                    line = raw.decode("utf-8", errors="replace").rstrip()
+                except (AttributeError, ValueError):  # pragma: no cover - defensive
+                    continue
+                if line:
+                    self._diag.append(line)
+        except (OSError, ValueError):  # pipe closed on terminate
+            pass
+
+    def _diag_tail(self, n: int = 8) -> str:
+        """Last ``n`` captured lines of the sidecar output, joined for display."""
+        if not self._diag:
+            return ""
+        return "\n".join(list(self._diag)[-n:])
 
     def start(self) -> bool:
-        """Spawn the sidecar and wait for a healthy /health. Idempotent.
+        """Spawn the sidecar and wait until it's ready. Idempotent.
 
         Holds ``_lock`` for the whole spawn+readiness so ``ensure_started`` is
         automatically single-flight: concurrent waiters serialize and look at
@@ -253,22 +302,57 @@ class WhisperSidecar:
         return self.start()
 
     def _wait_ready(self) -> bool:
-        """Poll GET /health until 200 or startup_timeout elapses."""
+        """Poll for a healthy sidecar until ``startup_timeout`` elapses.
+
+        Readiness signals: whisper.cpp ``/health`` (200 ready, 503 still loading)
+        exists on master but NOT on the v1.7.4 the Dockerfile pins (it returns
+        404) — so on a 404 we fall back to ``GET /`` (200 on both once the model
+        is loaded and bound). Fails fast with the child's exit code + captured
+        stderr if the process died before listening (no 30 s of dead polling).
+        """
         deadline = time.monotonic() + self.startup_timeout
-        last = None
+        last: str | None = None
         http = self.http
         if http is None:  # pragma: no cover - __post_init__ always provides one
             return False
         while time.monotonic() < deadline:
+            proc = self._proc
+            if proc is not None and proc.poll() is not None:
+                # Fail fast: the child exited before serving — report why.
+                code = proc.poll()
+                diag = self._diag_tail()
+                self._last_error = (
+                    f"whisper-server exited during startup (code {code})"
+                    + (f": {diag}" if diag else "")
+                )
+                return False
             try:
                 resp = http.get("/health", timeout=1.0)
-                if resp.status_code == 200:
-                    return True
-                last = f"health={resp.status_code}"
             except Exception as exc:  # pragma: no cover - connection refused etc.
                 last = str(exc)
+                time.sleep(self.startup_poll)
+                continue
+            if resp.status_code == 200:
+                return True
+            if resp.status_code == 404:
+                # v1.7.4 has no /health route; GET / is 200 on both versions.
+                try:
+                    root = http.get("/", timeout=1.0)
+                except Exception as exc:  # pragma: no cover - defensive
+                    last = str(exc)
+                else:
+                    if root.status_code == 200:
+                        return True
+                    last = f"/={root.status_code}"
+            elif resp.status_code in (409, 503):
+                last = f"health={resp.status_code} (still loading)"
+            else:
+                last = f"health={resp.status_code}"
             time.sleep(self.startup_poll)
-        self._last_error = f"whisper-server not ready: {last}"
+        diag = self._diag_tail()
+        self._last_error = (
+            f"whisper-server not ready: {last}" + (f"\n{diag}" if diag else "")
+        )
         return False
 
     def _terminate(self) -> None:
