@@ -43,7 +43,7 @@ app.delete("/v1/voices/{name}")(delete_voice)
 
 - Directory: `<cache_dir>/voices/` where `cache_dir` defaults to
   `~/.cache/pocket_tts` (mirrors pocket-tts). Make it overridable via
-  `POCKET_TTS_CACHE_DIR` so tests use tmp_path.
+  `STTS_CACHE_DIR` so tests use tmp_path.
 - `registry.json` next to the safetensors files:
   `{"voices": [{"name": "mario", "language": "it", "created": "…iso8601…"}]}`
 - API: `load() -> list[CustomVoice]`, `add(name, language)`, `remove(name)`,
@@ -90,7 +90,7 @@ voice not already aliased. Custom entries from the registry.
 | Field | Rules |
 | --- | --- |
 | `name` | required; `^[a-z0-9][a-z0-9_-]{0,63}$`; **409** if it collides with an OpenAI alias, a Kyutai catalog name, an env-mapped alias, or an existing custom voice (PLAN.md said 400; 409 communicates the conflict better — use 409) |
-| `file` | required; extension decides format: `.wav`/`.mp3`/`.flac`; **413** if > `POCKET_TTS_MAX_UPLOAD_MB` (default 25); **400** on missing/unknown extension |
+| `file` | required; extension decides format: `.wav`/`.mp3`/`.flac`; **413** if > `STTS_MAX_UPLOAD_MB` (default 25); **400** on missing/unknown extension |
 | `language` | optional; free-form tag, stored and echoed only |
 
 Flow (new `TTSEngine.clone_voice(name, tmp_path, language)`):
@@ -242,7 +242,7 @@ measurement task, not a hard gate.
 
 Touch list: new `routes_voices.py`, `voice_registry.py`;
 modified `engine.py`, `server.py`, `routes_speech.py`, `voices.py`,
-`config.py` (`POCKET_TTS_CACHE_DIR`, `POCKET_TTS_MAX_UPLOAD_MB`);
+`config.py` (`STTS_CACHE_DIR`, `STTS_MAX_UPLOAD_MB`);
 new tests as above. No new dependencies (multipart via existing
 `python-multipart` from pocket-tts; verify it's a direct dep or add it).
 

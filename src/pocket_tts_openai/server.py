@@ -163,7 +163,7 @@ def _stt_watchdog(
 
 
 def _idle_watchdog(app: FastAPI, config: Config, stop: threading.Event) -> None:
-    """Periodically evict the model after ``POCKET_TTS_IDLE_UNLOAD_S`` without
+    """Periodically evict the model after ``STTS_IDLE_UNLOAD_S`` without
     API requests. Health probes do NOT touch the engine's idle timer, so they
     never reset the window (see PLAN-idle-unload.md).
     """

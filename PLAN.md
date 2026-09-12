@@ -35,7 +35,7 @@ Vincoli chiave di pocket-tts emersi dall'analisi del codice sorgente:
 | `speed` | Ignorato (pocket-tts non ha controllo di velocità); log warning | Time-stretch pitch-preserving (`ffmpeg atempo` / rubberband) |
 | `instructions` | Ignorato con log warning | Preset voce/lingua via config |
 | Mappa voci | Alias OpenAI → voci Kyutai (§5); nomi voce pocket-tts accettati direttamente (passthrough) | — |
-| Autenticazione | Bearer token opzionale via env `POCKET_TTS_API_KEY` (non impostata = open) | — |
+| Autenticazione | Bearer token opzionale via env `STTS_API_KEY` (non impostata = open) | — |
 | Backpressure | v1: coda senza limiti, documentato il comportamento serializzato | Limite coda + 429 `Too Many Requests` con `Retry-After` |
 
 ## 3. Superficie API
@@ -162,7 +162,7 @@ Flusso di onboarding senza sorprese:
 5. **Voci custom on-demand** (`hf://`/URL/upload): scaricate, codificate e caché-ate;
    log che segnala che la prima richiesta è lenta.
 
-Config: `POCKET_TTS_WARMUP_VOICES=giovanni,alba` (prefetch all'avvio), TTL/LRU sulla cache
+Config: `STTS_WARMUP_VOICES=giovanni,alba` (prefetch all'avvio), TTL/LRU sulla cache
 voce, quantize int8 opzionale per ridurre la RAM.
 
 ## 5. Mappa voci (alias OpenAI → Kyutai)
@@ -178,7 +178,7 @@ voce, quantize int8 opzionale per ridurre la RAM.
 | `coral` (estensione) | `giovanni` | **it** — voce italiana predefinita |
 | nome libero | come da catalogo / `hf://` / file | passthrough |
 
-Mappa sovrascrivibile via YAML (`voices.yaml`) o env `POCKET_TTS_VOICE_MAP=alloy=alba,…`.
+Mappa sovrascrivibile via YAML (`voices.yaml`) o env `STTS_VOICE_MAP=alloy=alba,…`.
 Licenze per-voce riportate in `/v1/voices` e README (fonte: `kyutai/tts-voices` su HF).
 
 ## 6. Struttura progetto
@@ -215,7 +215,7 @@ pocket-tts-openai/
    `/health`, `/v1/models`. Test contratto con modello mockato.
 2. **M2 — Formati compressi**: `encoders.py` con ffmpeg (rilevamento runtime), fallback 400
    documentato; test sui byte-header di ogni formato.
-3. **[x] M3 — Voci**: cache LRU, prefetch/warmup all'avvio (`POCKET_TTS_WARMUP_VOICES`),
+3. **[x] M3 — Voci**: cache LRU, prefetch/warmup all'avvio (`STTS_WARMUP_VOICES`),
    esportazione `.safetensors`, `GET/POST/DELETE /v1/voices` (catalogo + voice cloning
    con persistenza in `voices.json`).
 4. **[x] M4 — Streaming**: chunked transfer per `wav`/`pcm` via `generate_audio_stream`
@@ -227,7 +227,7 @@ pocket-tts-openai/
    (build CPU-only nel Dockerfile, ffmpeg runtime per mp3/m4a/webm), `POST
    /v1/audio/transcriptions` + `/v1/audio/translations`, `whisper-1` in `/v1/models`,
    download del GGUF al primo uso in `/data/cache/stt-models`, idle-eviction del sidecar
-   (process-kill + lazy restart, `POCKET_TTS_STT_IDLE_UNLOAD_S`), watchdog crash con
+   (process-kill + lazy restart, `STTS_STT_IDLE_UNLOAD_S`), watchdog crash con
    restart supervisionato, stubbed-sidecar test suite (30 test). *Manuali:* build
    Docker/OpenVINO (no docker nel sandbox).
 

@@ -60,13 +60,13 @@ def test_idle_config_zero_disables():
 
 
 def test_idle_config_from_env():
-    cfg = Config.from_env({"POCKET_TTS_IDLE_UNLOAD_S": "120", "POCKET_TTS_IDLE_POLL_S": "10"})
+    cfg = Config.from_env({"STTS_IDLE_UNLOAD_S": "120", "STTS_IDLE_POLL_S": "10"})
     assert cfg.idle_unload_s == 120
     assert cfg.idle_poll_s == 10
 
 
 def test_idle_config_from_env_disable():
-    assert Config.from_env({"POCKET_TTS_IDLE_UNLOAD_S": "0"}).idle_unload_s == 0
+    assert Config.from_env({"STTS_IDLE_UNLOAD_S": "0"}).idle_unload_s == 0
 
 
 # -- engine lifecycle --------------------------------------------------------

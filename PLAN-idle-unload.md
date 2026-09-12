@@ -84,8 +84,8 @@ Keep the process alive; evict only the heavy object.
 
 ### 5. Config (`config.py`)
 
-- `POCKET_TTS_IDLE_UNLOAD_S` (int, default **300** = 5 min; `0` disables).
-- `POCKET_TTS_IDLE_POLL_S` (int, default 30) — watchdog cadence (only when unload enabled).
+- `STTS_IDLE_UNLOAD_S` (int, default **300** = 5 min; `0` disables).
+- `STTS_IDLE_POLL_S` (int, default 30) — watchdog cadence (only when unload enabled).
 
 ### 6. `/health` observability (`routes_speech.py`)
 
@@ -103,14 +103,14 @@ Keep the process alive; evict only the heavy object.
   blocks until `ensure_loaded` rebuilds, then returns 200 (assert the response is
   correct after wake, and that no extra `loader` calls happen for concurrent
   waiters — single-flight).
-- Config tests for `POCKET_TTS_IDLE_UNLOAD_S` parse + `0` disables.
+- Config tests for `STTS_IDLE_UNLOAD_S` parse + `0` disables.
 - Keep tests deterministic (no real sleeps; call `maybe_unload(now)` directly).
 - Full suite target: 70 + ~8 new, all green; `git diff --stat` for the commit.
 
 ### 8. Docker / README
 
 - No Dockerfile change required (feature is runtime-config via env).
-- README Configuration table: document `POCKET_TTS_IDLE_UNLOAD_S` / `_POLL_S`;
+- README Configuration table: document `STTS_IDLE_UNLOAD_S` / `_POLL_S`;
   Container section: note `/data` volume keeps the HF cache warm so a reload is ~1 s
   and eviction+relaad needs no re-download.
 - PLAN.md: mark this section.
@@ -125,7 +125,7 @@ Keep the process alive; evict only the heavy object.
   would *reset* the idle timer and defeat eviction — the watchdog must use
   **API request timestamps**, not health probes. (Keep health from touching.)
 - **Memory-mapping / `torch.no_grad`:** orthogonal; doesn't reclaim the floor.
-- Quantization (`POCKET_TTS_QUANTIZE=true`) already exists and reduces the
+- Quantization (`STTS_QUANTIZE=true`) already exists and reduces the
   *resident* weights further; idle-eviction composes with it (both on ⇒ bigger drop).
 
 ## Milestone
@@ -136,6 +136,6 @@ M5.5 · idle unload. Files: `config.py`, `engine.py`, `server.py`,
 > **Status: IMPLEMENTED (M5.5)** — default 300 s; **block-until-reloaded**
 > wake policy; in-process eviction + single-flight lazy reload; watchdog daemon
 > in `lifespan`; `/health` adds `loaded`/`unloads`/`reloads`/`last_request_age_s`;
-> 18 new tests (70→88 green); pyright clean. Config: `POCKET_TTS_IDLE_UNLOAD_S`,
-> `POCKET_TTS_IDLE_POLL_S`. (See commit for the diff; this artifact remains a
+> 18 new tests (70→88 green); pyright clean. Config: `STTS_IDLE_UNLOAD_S`,
+> `STTS_IDLE_POLL_S`. (See commit for the diff; this artifact remains a
 > review record.)

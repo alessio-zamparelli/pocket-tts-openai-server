@@ -45,7 +45,7 @@ TERMINATE_TIMEOUT_S = 5.0
 
 
 def model_filename(model: str) -> str:
-    """Map ``POCKET_TTS_STT_MODEL`` to the GGUF filename in the HF repo.
+    """Map ``STTS_STT_MODEL`` to the GGUF filename in the HF repo.
 
     - ``small`` -> ``ggml-small.bin``
     - ``small.q5_0`` (quantized variant) -> ``ggml-small.q5_0.bin``

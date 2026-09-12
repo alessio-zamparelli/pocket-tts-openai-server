@@ -19,7 +19,7 @@ def _split_voice_map(raw: str) -> dict[str, str]:
         if not pair:
             continue
         if "=" not in pair:
-            raise ValueError(f"POCKET_TTS_VOICE_MAP entry must be `alias=voice`, got: {pair!r}")
+            raise ValueError(f"STTS_VOICE_MAP entry must be `alias=voice`, got: {pair!r}")
         alias, voice = pair.split("=", 1)
         out[alias.strip()] = voice.strip()
     return out
@@ -51,7 +51,7 @@ class Config:
     idle_unload_s: int = 300  # evict the model to free RAM after this much idle; 0 = off
     idle_poll_s: int = 30  # watchdog cadence (only when idle_unload_s > 0)
     # STT (whisper.cpp sidecar). Master switch defaults OFF so TTS-only deploys
-    # are unaffected; set POCKET_TTS_STT_ENABLED=true to serve /v1/audio/transcriptions.
+    # are unaffected; set STTS_STT_ENABLED=true to serve /v1/audio/transcriptions.
     stt_enabled: bool = False
     stt_model: str = "small"  # ggml-{model}.bin (multilingual); a quantized variant
     # (e.g. "small.q5_0") is selectable by full filename.
@@ -70,34 +70,34 @@ class Config:
     def from_env(cls, env: dict[str, str] | None = None) -> "Config":
         env = dict(os.environ if env is None else env)
         voice_map = dict(DEFAULT_VOICE_ALIASES)
-        if raw := env.get("POCKET_TTS_VOICE_MAP", ""):
+        if raw := env.get("STTS_VOICE_MAP", ""):
             voice_map.update(_split_voice_map(raw))
         warmup = tuple(
-            v.strip() for v in env.get("POCKET_TTS_WARMUP_VOICES", "").split(",") if v.strip()
+            v.strip() for v in env.get("STTS_WARMUP_VOICES", "").split(",") if v.strip()
         )
         return cls(
-            host=env.get("POCKET_TTS_HOST", "127.0.0.1"),
-            port=_env_int(env, "POCKET_TTS_PORT", 8000),
-            language=env.get("POCKET_TTS_LANGUAGE", "english"),
-            default_voice=env.get("POCKET_TTS_DEFAULT_VOICE", "alloy"),
+            host=env.get("STTS_HOST", "127.0.0.1"),
+            port=_env_int(env, "STTS_PORT", 8000),
+            language=env.get("STTS_LANGUAGE", "english"),
+            default_voice=env.get("STTS_DEFAULT_VOICE", "alloy"),
             voice_map=voice_map,
-            api_key=env.get("POCKET_TTS_API_KEY") or None,
+            api_key=env.get("STTS_API_KEY") or None,
             warmup_voices=warmup,
-            quantize=env.get("POCKET_TTS_QUANTIZE", "").lower() in ("1", "true", "yes"),
-            max_cached_voices=_env_int(env, "POCKET_TTS_MAX_CACHED_VOICES", 32),
-            cache_dir=env.get("POCKET_TTS_CACHE_DIR", ""),
-            max_upload_mb=_env_int(env, "POCKET_TTS_MAX_UPLOAD_MB", 25),
-            idle_unload_s=_env_int(env, "POCKET_TTS_IDLE_UNLOAD_S", 300),
-            idle_poll_s=_env_int(env, "POCKET_TTS_IDLE_POLL_S", 30),
-            stt_enabled=env.get("POCKET_TTS_STT_ENABLED", "").lower() in ("1", "true", "yes"),
-            stt_model=env.get("POCKET_TTS_STT_MODEL", "small").strip() or "small",
-            stt_model_repo=env.get("POCKET_TTS_STT_MODEL_REPO", "ggerganov/whisper.cpp").strip() or "ggerganov/whisper.cpp",
-            stt_model_dir=env.get("POCKET_TTS_STT_MODEL_DIR", "").strip(),
-            stt_bin=env.get("POCKET_TTS_STT_BIN", "whisper-server").strip() or "whisper-server",
-            stt_host=env.get("POCKET_TTS_STT_HOST", "127.0.0.1").strip() or "127.0.0.1",
-            stt_port=_env_int(env, "POCKET_TTS_STT_PORT", 8787),
-            stt_threads=_env_int(env, "POCKET_TTS_STT_THREADS", 4),
-            stt_language=env.get("POCKET_TTS_STT_LANGUAGE", "").strip(),
-            stt_idle_unload_s=_env_int(env, "POCKET_TTS_STT_IDLE_UNLOAD_S", 300),
-            stt_idle_poll_s=_env_int(env, "POCKET_TTS_STT_IDLE_POLL_S", 30),
+            quantize=env.get("STTS_QUANTIZE", "").lower() in ("1", "true", "yes"),
+            max_cached_voices=_env_int(env, "STTS_MAX_CACHED_VOICES", 32),
+            cache_dir=env.get("STTS_CACHE_DIR", ""),
+            max_upload_mb=_env_int(env, "STTS_MAX_UPLOAD_MB", 25),
+            idle_unload_s=_env_int(env, "STTS_IDLE_UNLOAD_S", 300),
+            idle_poll_s=_env_int(env, "STTS_IDLE_POLL_S", 30),
+            stt_enabled=env.get("STTS_STT_ENABLED", "").lower() in ("1", "true", "yes"),
+            stt_model=env.get("STTS_STT_MODEL", "small").strip() or "small",
+            stt_model_repo=env.get("STTS_STT_MODEL_REPO", "ggerganov/whisper.cpp").strip() or "ggerganov/whisper.cpp",
+            stt_model_dir=env.get("STTS_STT_MODEL_DIR", "").strip(),
+            stt_bin=env.get("STTS_STT_BIN", "whisper-server").strip() or "whisper-server",
+            stt_host=env.get("STTS_STT_HOST", "127.0.0.1").strip() or "127.0.0.1",
+            stt_port=_env_int(env, "STTS_STT_PORT", 8787),
+            stt_threads=_env_int(env, "STTS_STT_THREADS", 4),
+            stt_language=env.get("STTS_STT_LANGUAGE", "").strip(),
+            stt_idle_unload_s=_env_int(env, "STTS_STT_IDLE_UNLOAD_S", 300),
+            stt_idle_poll_s=_env_int(env, "STTS_STT_IDLE_POLL_S", 30),
         )

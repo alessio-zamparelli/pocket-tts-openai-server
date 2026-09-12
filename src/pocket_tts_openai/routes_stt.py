@@ -88,7 +88,7 @@ async def _handle_stt(request: Request, *, translate: bool) -> Response:
     cfg = request.app.state.config
     if sidecar is None:
         raise unavailable(
-            "STT is not enabled (POCKET_TTS_STT_ENABLED=true) or the sidecar is "
+            "STT is not enabled (STTS_STT_ENABLED=true) or the sidecar is "
             "still initializing."
         )
 

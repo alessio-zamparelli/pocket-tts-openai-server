@@ -13,14 +13,14 @@ services:
       - "8080:8000"
     environment:
       # Optional knobs (see README "Configuration (env)"). API key left unset.
-      POCKET_TTS_HOST: 0.0.0.0
-      POCKET_TTS_PORT: "8000"
+      STTS_HOST: 0.0.0.0
+      STTS_PORT: "8000"
       # Uncomment to pre-warm some voices at startup:
-      # POCKET_TTS_WARMUP_VOICES: alba,charles
+      # STTS_WARMUP_VOICES: alba,charles
       # STT (whisper.cpp sidecar): off by default; turn on to expose
       # POST /v1/audio/transcriptions + /v1/audio/translations.
-      # POCKET_TTS_STT_ENABLED: "true"
-      # POCKET_TTS_STT_MODEL: small   # ggml-small.bin (~466 MB, multilingual)
+      # STTS_STT_ENABLED: "true"
+      # STTS_STT_MODEL: small   # ggml-small.bin (~466 MB, multilingual)
     volumes:
       # Persistent model weights + voice registry across restarts.
       - tts-data:/data

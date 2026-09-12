@@ -18,7 +18,7 @@ uv run pocket-tts-openai               # serve on :8000
 ```
 
 To run on all interfaces / another port (as used by the live server):
-`POCKET_TTS_HOST=0.0.0.0 POCKET_TTS_PORT=8080 uv run pocket-tts-openai`.
+`STTS_HOST=0.0.0.0 STTS_PORT=8080 uv run pocket-tts-openai`.
 
 ## Endpoints
 
@@ -55,7 +55,7 @@ Body (JSON):
 
 ### `POST /v1/audio/transcriptions` · `POST /v1/audio/translations` (STT)
 
-Whisper.cpp STT (requires `POCKET_TTS_STT_ENABLED=true`). Multipart/form-data
+Whisper.cpp STT (requires `STTS_STT_ENABLED=true`). Multipart/form-data
 matching the OpenAI audio API: `file` (wav/mp3/m4a/webm — ffmpeg-decoded in
 the container), `model` (`whisper-1`), plus optional `language`, `prompt`,
 `response_format`, `temperature`, `timestamp_granularities[]`.
@@ -67,7 +67,7 @@ the container), `model` (`whisper-1`), plus optional `language`, `prompt`,
 
 Powered by a persistent native `whisper-server` subprocess sidecar (default
 model `small`, ggml-small.bin ~466 MB multilingual, overridable via
-`POCKET_TTS_STT_MODEL`). STT routes return **503** when STT is disabled or the
+`STTS_STT_MODEL`). STT routes return **503** when STT is disabled or the
 sidecar cannot start, **400** on validation errors, **413** over the upload
 limit.
 
@@ -89,7 +89,7 @@ limit.
 - `name` (required): `^[a-z0-9][a-z0-9_-]{0,63}$`. **409** on collision with a
   built-in alias/catalog voice or an existing custom voice.
 - `file` (required): `.wav` / `.mp3` / `.flac`. **413** over
-  `POCKET_TTS_MAX_UPLOAD_MB` (default 25). **400** on unknown extension.
+  `STTS_MAX_UPLOAD_MB` (default 25). **400** on unknown extension.
 - `language` (optional): free-form tag, stored and echoed.
 
 Returns **201** with the custom-voice payload after the audio prompt is encoded
@@ -104,20 +104,20 @@ Custom voices are immediately usable as `voice` in `/v1/audio/speech`.
 
 ### Idle RAM reclamation
 
-After `POCKET_TTS_IDLE_UNLOAD_S` (default 300 s = 5 min) with **no API
+After `STTS_IDLE_UNLOAD_S` (default 300 s = 5 min) with **no API
 requests**, the model is dropped from RAM (~60% of the resident footprint) to
 keep an idle API cheap. The next request **blocks while it reloads** (~1 s warm
-from the HF cache) instead of returning 503. Set `POCKET_TTS_IDLE_UNLOAD_S=0`
+from the HF cache) instead of returning 503. Set `STTS_IDLE_UNLOAD_S=0`
 to keep the model resident always. `/health` exposes `loaded`, `unloads`,
 `reloads` and `last_request_age_s`.
 
 **STT sidecar eviction** mirrors this but at the process level: after
-`POCKET_TTS_STT_IDLE_UNLOAD_S` (default 300 s) with **no STT request**, the
+`STTS_STT_IDLE_UNLOAD_S` (default 300 s) with **no STT request**, the
 `whisper-server` process is killed to reclaim ~100% of its RSS (~1 GB for
 `small`). TTS traffic and `/health` probes never reset the STT timer — a
 request after the eviction just blocks a moment while the sidecar re-spawns
 (from `/data`, no re-model-download) instead of returning 503. Set
-`POCKET_TTS_STT_IDLE_UNLOAD_S=0` to always keep the sidecar resident.
+`STTS_STT_IDLE_UNLOAD_S=0` to always keep the sidecar resident.
 `/health` `stt` block exposes `idle_stops`, `idle_starts`, `restarts` and
 `last_request_age_s`.
 
@@ -125,28 +125,28 @@ request after the eviction just blocks a moment while the sidecar re-spawns
 
 | var | default | notes |
 | --- | --- | --- |
-| `POCKET_TTS_HOST` | `127.0.0.1` | bind host |
-| `POCKET_TTS_PORT` | `8000` | bind port |
-| `POCKET_TTS_LANGUAGE` | `english` | model language |
-| `POCKET_TTS_QUANTIZE` | `false` | quantize the model |
-| `POCKET_TTS_MAX_CACHED_VOICES` | `32` | LRU voice-state cache size |
-| `POCKET_TTS_WARMUP_VOICES` | — | comma-separated voices to pre-encode at boot |
-| `POCKET_TTS_IDLE_UNLOAD_S` | `300` | evict the model from RAM after this many idle seconds; `0` disables |
-| `POCKET_TTS_IDLE_POLL_S` | `30` | idle-eviction watchdog poll interval (seconds) |
-| `POCKET_TTS_API_KEY` | — | if set, `Bearer <key>` required on `/v1/*` |
-| `POCKET_TTS_CACHE_DIR` | `~/.cache/pocket_tts` | base for cloned voice registry |
-| `POCKET_TTS_MAX_UPLOAD_MB` | `25` | max cloned-voice / STT-audio upload size |
-| `POCKET_TTS_STT_ENABLED` | `false` | serve `/v1/audio/transcriptions` + `/v1/audio/translations` via a whisper.cpp sidecar |
-| `POCKET_TTS_STT_MODEL` | `small` | ggml model (`small`, `base`, `small.q5_0`, …) |
-| `POCKET_TTS_STT_MODEL_REPO` | `ggerganov/whisper.cpp` | HF repo hosting `ggml-*.bin` |
-| `POCKET_TTS_STT_MODEL_DIR` | `{cache_dir}/stt-models` | where the GGUF is stored (first run downloads) |
-| `POCKET_TTS_STT_BIN` | `whisper-server` | sidecar binary on PATH |
-| `POCKET_TTS_STT_HOST` | `127.0.0.1` | sidecar bind host (loopback only) |
-| `POCKET_TTS_STT_PORT` | `8787` | sidecar bind port |
-| `POCKET_TTS_STT_THREADS` | `4` | whisper compute threads |
-| `POCKET_TTS_STT_LANGUAGE` | — | force transcription language (empty = auto-detect) |
-| `POCKET_TTS_STT_IDLE_UNLOAD_S` | `300` | kill the sidecar after this many STT-idle seconds; `0` disables |
-| `POCKET_TTS_STT_IDLE_POLL_S` | `30` | STT watchdog poll interval (seconds) |
+| `STTS_HOST` | `127.0.0.1` | bind host |
+| `STTS_PORT` | `8000` | bind port |
+| `STTS_LANGUAGE` | `english` | model language |
+| `STTS_QUANTIZE` | `false` | quantize the model |
+| `STTS_MAX_CACHED_VOICES` | `32` | LRU voice-state cache size |
+| `STTS_WARMUP_VOICES` | — | comma-separated voices to pre-encode at boot |
+| `STTS_IDLE_UNLOAD_S` | `300` | evict the model from RAM after this many idle seconds; `0` disables |
+| `STTS_IDLE_POLL_S` | `30` | idle-eviction watchdog poll interval (seconds) |
+| `STTS_API_KEY` | — | if set, `Bearer <key>` required on `/v1/*` |
+| `STTS_CACHE_DIR` | `~/.cache/pocket_tts` | base for cloned voice registry |
+| `STTS_MAX_UPLOAD_MB` | `25` | max cloned-voice / STT-audio upload size |
+| `STTS_STT_ENABLED` | `false` | serve `/v1/audio/transcriptions` + `/v1/audio/translations` via a whisper.cpp sidecar |
+| `STTS_STT_MODEL` | `small` | ggml model (`small`, `base`, `small.q5_0`, …) |
+| `STTS_STT_MODEL_REPO` | `ggerganov/whisper.cpp` | HF repo hosting `ggml-*.bin` |
+| `STTS_STT_MODEL_DIR` | `{cache_dir}/stt-models` | where the GGUF is stored (first run downloads) |
+| `STTS_STT_BIN` | `whisper-server` | sidecar binary on PATH |
+| `STTS_STT_HOST` | `127.0.0.1` | sidecar bind host (loopback only) |
+| `STTS_STT_PORT` | `8787` | sidecar bind port |
+| `STTS_STT_THREADS` | `4` | whisper compute threads |
+| `STTS_STT_LANGUAGE` | — | force transcription language (empty = auto-detect) |
+| `STTS_STT_IDLE_UNLOAD_S` | `300` | kill the sidecar after this many STT-idle seconds; `0` disables |
+| `STTS_STT_IDLE_POLL_S` | `30` | STT watchdog poll interval (seconds) |
 
 ## Container (Docker)
 
@@ -167,26 +167,26 @@ Or `docker compose up -d --build` (see `docker-compose.yml`).
 
 - **Runtime user**: non-root (`tts`, uid 10001), exposes `8000`.
 - **Persistent volume** `/data`: model weights (`HF_HOME=/data/hf`) +
-  cloned voices (`POCKET_TTS_CACHE_DIR=/data/cache` → `/data/cache/voices`)
-  + STT GGUFs (`/data/cache/stt-models`). Mount it so weights are downloaded
+  cloned voices (`STTS_CACHE_DIR=/data/cache` → `/data/cache/voices`)
+  - STT GGUFs (`/data/cache/stt-models`). Mount it so weights are downloaded
   once and custom voices survive restarts. A host bind-mount at `/data` must
   be owned `10001:10001`, else HF-cache/STT-model writes fail (named volumes
   are fine).
-- **STT (optional)**: set `POCKET_TTS_STT_ENABLED=true`. A native
+- **STT (optional)**: set `STTS_STT_ENABLED=true`. A native
   `whisper-server` binary (built in a dedicated `whispercpp` stage, CPU-only,
   no CUDA) is copied into the runtime image; `ffmpeg` is installed so mp3/
   m4a/webm uploads are decoded. The `small` GGUF (~466 MB) downloads on first
   STT use into `/data/cache/stt-models` (the GGUF stays on disk). The resident
   `whisper-server` (~1 GB RSS for `small`) is auto-killed after
-  `POCKET_TTS_STT_IDLE_UNLOAD_S` of STT silence and lazily re-spawned (no
+  `STTS_STT_IDLE_UNLOAD_S` of STT silence and lazily re-spawned (no
   re-download) on the next STT request.
 - **No CUDA**: `torch` resolves from the PyTorch **CPU** wheel index via
   `uv.lock` (`[tool.uv.sources]`); the whisper.cpp stage builds CPU-only
   (`-DWHISPER_BUILD_SERVER=ON`, no CUDA flag). Nothing NVIDIA layers in.
 - The bind host defaults to `0.0.0.0` inside the container (port `8000`);
-  override with `POCKET_TTS_HOST`/`POCKET_TTS_PORT`.
+  override with `STTS_HOST`/`STTS_PORT`.
 - Model weights download on first boot (~430 MB); warm the cache beforehand
-  with `POCKET_TTS_WARMUP_VOICES` if you want them pre-encoded at startup.
+  with `STTS_WARMUP_VOICES` if you want them pre-encoded at startup.
 
 Image is published to **GHCR** (`ghcr.io/<repo>`) by the
 `.github/workflows/docker-publish.yml` pipeline: tests gate the build, then
@@ -223,7 +223,7 @@ git tag v0.1.0 && git push origin main --tags  # triggers the workflow
 - **STT**: CPU-only whisper (real-time-factor on a modest laptop); word-level
   timestamps are best-effort; OpenVINO acceleration is a documented follow-up
   (manual compile flag) — STT ships on native ggml CPU.
-- STT is disabled by default; if `POCKET_TTS_STT_ENABLED=true` and the
+- STT is disabled by default; if `STTS_STT_ENABLED=true` and the
   `whisper-server` binary is missing, STT routes return **503** — TTS is
   unaffected.
 

@@ -83,9 +83,9 @@ RUN apt-get update \
 ENV PATH="/app/.venv/bin:$PATH" \
     UV_PYTHON_DOWNLOADS=0 \
     PYTHONUNBUFFERED=1 \
-    POCKET_TTS_HOST=0.0.0.0 \
-    POCKET_TTS_PORT=8000 \
-    POCKET_TTS_CACHE_DIR=/data/cache \
+    STTS_HOST=0.0.0.0 \
+    STTS_PORT=8000 \
+    STTS_CACHE_DIR=/data/cache \
     HF_HOME=/data/hf
 
 WORKDIR /app
@@ -94,8 +94,8 @@ COPY --from=builder /app/.venv /app/.venv
 # Native whisper-server STT sidecar: /usr/local/bin is on PATH for the tts user.
 COPY --from=whispercpp /out/bin/whisper-server /usr/local/bin/whisper-server
 # STT model GGUFs live under /data/cache/stt-models (persistent volume).
-ENV POCKET_TTS_STT_BIN=whisper-server \
-    POCKET_TTS_STT_MODEL_DIR=/data/cache/stt-models
+ENV STTS_STT_BIN=whisper-server \
+    STTS_STT_MODEL_DIR=/data/cache/stt-models
 
 # Non-root runtime user; /data must stay writable for model weights + voices.
 RUN useradd --create-home --uid 10001 tts \
@@ -103,7 +103,7 @@ RUN useradd --create-home --uid 10001 tts \
     && chown -R tts:tts /data
 
 # Persistent volume: model weights (HF_HOME=/data/hf) + voice registry
-# (POCKET_TTS_CACHE_DIR=/data/cache -> /data/cache/voices). Mount it to avoid
+# (STTS_CACHE_DIR=/data/cache -> /data/cache/voices). Mount it to avoid
 # re-downloading weights and to keep custom voices across restarts.
 VOLUME ["/data"]
 
