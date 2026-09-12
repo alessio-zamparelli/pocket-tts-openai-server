@@ -15,6 +15,9 @@ dependencies = [
     # FastAPI imports it lazily only when Form/UploadFile routes exist, so it
     # must be a direct dep instead of relying on pocket-tts pulling it in.
     "python-multipart>=0.0.9",
+    # Runtime HTTP client: STT sidecar proxy (routes_stt -> whisper-server) and
+    # the whisper GGUF model downloader (stt.ensure_model).
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
@@ -25,7 +28,6 @@ engine = ["pocket-tts>=0.1", "torch>=2.0"]
 [dependency-groups]
 dev = [
     "pytest>=8",
-    "httpx>=0.27",
 ]
 
 [project.scripts]

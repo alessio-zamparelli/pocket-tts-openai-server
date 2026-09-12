@@ -41,13 +41,42 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-editable --extra engine
 
 ###############################################################################
+# Stage 1.5 — whispercpp: build the native whisper-server STT sidecar (CPU-only,
+# no CUDA/NVIDIA). Whisper.cpp is built once from a pinned release; OpenVINO is
+# a documented compile-time follow-up (-DWHISPER_OPENVINO=1) not enabled here.
+###############################################################################
+FROM debian:bookworm-slim AS whispercpp
+
+ARG WHISPER_CPP_REF=v1.7.4
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates git cmake make g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+# NOTE: examples/CMakeLists gates the whole examples tree on
+# WHISPER_BUILD_EXAMPLES and adds examples/server unconditionally inside it;
+# WHISPER_BUILD_SERVER is currently only an (unused) option, so we keep
+# WHISPER_BUILD_EXAMPLES=ON (default) to build whisper-server and copy only
+# that one binary out — the extra examples never reach the runtime image.
+RUN git clone --depth 1 --branch ${WHISPER_CPP_REF} https://github.com/ggerganov/whisper.cpp.git \
+    && cmake -S whisper.cpp -B build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DWHISPER_BUILD_TESTS=OFF \
+    && cmake --build build --config Release --target whisper-server -j"$(nproc)" \
+    && mkdir -p /out/bin \
+    && cp build/bin/whisper-server /out/bin/
+
+###############################################################################
 # Stage 2 — runtime: minimal, non-root, persistent /data volume
 ###############################################################################
 FROM python:3.14-slim AS runtime
 
-# OpenMP runtime needed by torch (CPU) for multithreading.
+# OpenMP runtime needed by torch (CPU) for multithreading; ffmpeg decodes the
+# mp3/m4a/webm audio clips the STT endpoints accept (whisper.cpp reads wav).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libgomp1 \
+    && apt-get install -y --no-install-recommends libgomp1 ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Reuse the system Python across stages; put the app venv on PATH.
@@ -61,6 +90,12 @@ ENV PATH="/app/.venv/bin:$PATH" \
 
 WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
+
+# Native whisper-server STT sidecar: /usr/local/bin is on PATH for the tts user.
+COPY --from=whispercpp /out/bin/whisper-server /usr/local/bin/whisper-server
+# STT model GGUFs live under /data/cache/stt-models (persistent volume).
+ENV POCKET_TTS_STT_BIN=whisper-server \
+    POCKET_TTS_STT_MODEL_DIR=/data/cache/stt-models
 
 # Non-root runtime user; /data must stay writable for model weights + voices.
 RUN useradd --create-home --uid 10001 tts \

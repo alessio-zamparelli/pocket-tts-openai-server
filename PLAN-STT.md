@@ -267,9 +267,16 @@ M6 · STT endpoint. Files: `deploy/Dockerfile`, `config.py`, `server.py`,
 `src/pocket_tts_openai/stt.py`, `src/pocket_tts_openai/routes_stt.py`,
 `routes_speech.py` (`/v1/models`, `/health`), `README.md`, `PLAN.md`, tests.
 
-> **Status: PLANNED** — decisions locked: persistent `whisper-server` sidecar;
-> default `small` (multilingual); transcriptions + translations + `/v1/models`;
-> OpenVINO deferred as a documented build+env follow-up (native ggml CPU v1);
-> **idle RAM eviction for the sidecar (process kill + lazy restart)** with a
-> separate `POCKET_TTS_STT_IDLE_UNLOAD_S`, per-subsystem timer, dedicated
-> watchdog, and block-until-ready wake.
+> **Status: IMPLEMENTED** — what landed: persistent
+> `whisper-server` sidecar (default `small` multilingual); `stt.py` (WhisperSidecar
+> with injectable http/spawn/clock; single-flight `ensure_started`; `stop_if_idle`
+> process-kill eviction with separate `POCKET_TTS_STT_IDLE_UNLOAD_S` + dedicated
+> watchdog; crash watch with one supervised restart); `routes_stt.py`
+> (`/v1/audio/transcriptions` + `/v1/audio/translations` mapping, per-format
+> rendering); `whisper-1` in `/v1/models` + `stt` block in `/health`; GGUF
+> download-to-disk on first use (`stt.ensure_model`); Dockerfile `whispercpp`
+> build stage (CPU-only, no CUDA) + ffmpeg in runtime; httpx promoted to a runtime
+> dependency; README/PLAN/compose updates; 31 stubbed-sidecar tests (full suite
+> 119 green, pyright 0). Manual-only: the Docker whisper.cpp/OpenVINO build.
+> OpenVINO remains a documented follow-up (compile flag + encoded encoder IR +
+> `--ov-e-device` wiring) on top of the native ggml CPU default.

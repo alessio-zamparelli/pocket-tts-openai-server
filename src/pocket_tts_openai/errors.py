@@ -32,6 +32,10 @@ def unavailable(message: str) -> OpenAIError:
     return OpenAIError(message, status=503, type_="api_error", code="unavailable")
 
 
+def bad_gateway(message: str) -> OpenAIError:
+    return OpenAIError(message, status=502, type_="api_error", code="bad_gateway")
+
+
 def invalid_api_key(message: str) -> OpenAIError:
     return OpenAIError(message, status=401, type_="invalid_request_error", code="invalid_api_key")
 

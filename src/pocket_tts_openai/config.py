@@ -50,6 +50,21 @@ class Config:
     max_upload_mb: int = 25
     idle_unload_s: int = 300  # evict the model to free RAM after this much idle; 0 = off
     idle_poll_s: int = 30  # watchdog cadence (only when idle_unload_s > 0)
+    # STT (whisper.cpp sidecar). Master switch defaults OFF so TTS-only deploys
+    # are unaffected; set POCKET_TTS_STT_ENABLED=true to serve /v1/audio/transcriptions.
+    stt_enabled: bool = False
+    stt_model: str = "small"  # ggml-{model}.bin (multilingual); a quantized variant
+    # (e.g. "small.q5_0") is selectable by full filename.
+    stt_model_repo: str = "ggerganov/whisper.cpp"  # HF repo hosting ggml-*.bin
+    stt_model_dir: str = ""  # empty = {cache_dir}/stt-models
+    stt_bin: str = "whisper-server"  # sidecar binary path (tests/advanced override)
+    stt_host: str = "127.0.0.1"  # internal loopback bind, never exposed
+    stt_port: int = 8787  # internal HTTP port proxied by the app
+    stt_threads: int = 4  # whisper -t compute threads
+    stt_language: str = ""  # optional default whisper language; empty = auto-detect
+    stt_idle_unload_s: int = 300  # kill the sidecar after this long without an STT
+    # request (reclaims its RAM); 0 = off, independent of idle_unload_s.
+    stt_idle_poll_s: int = 30  # dedicated STT watchdog cadence
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "Config":
@@ -74,4 +89,15 @@ class Config:
             max_upload_mb=_env_int(env, "POCKET_TTS_MAX_UPLOAD_MB", 25),
             idle_unload_s=_env_int(env, "POCKET_TTS_IDLE_UNLOAD_S", 300),
             idle_poll_s=_env_int(env, "POCKET_TTS_IDLE_POLL_S", 30),
+            stt_enabled=env.get("POCKET_TTS_STT_ENABLED", "").lower() in ("1", "true", "yes"),
+            stt_model=env.get("POCKET_TTS_STT_MODEL", "small").strip() or "small",
+            stt_model_repo=env.get("POCKET_TTS_STT_MODEL_REPO", "ggerganov/whisper.cpp").strip() or "ggerganov/whisper.cpp",
+            stt_model_dir=env.get("POCKET_TTS_STT_MODEL_DIR", "").strip(),
+            stt_bin=env.get("POCKET_TTS_STT_BIN", "whisper-server").strip() or "whisper-server",
+            stt_host=env.get("POCKET_TTS_STT_HOST", "127.0.0.1").strip() or "127.0.0.1",
+            stt_port=_env_int(env, "POCKET_TTS_STT_PORT", 8787),
+            stt_threads=_env_int(env, "POCKET_TTS_STT_THREADS", 4),
+            stt_language=env.get("POCKET_TTS_STT_LANGUAGE", "").strip(),
+            stt_idle_unload_s=_env_int(env, "POCKET_TTS_STT_IDLE_UNLOAD_S", 300),
+            stt_idle_poll_s=_env_int(env, "POCKET_TTS_STT_IDLE_POLL_S", 30),
         )

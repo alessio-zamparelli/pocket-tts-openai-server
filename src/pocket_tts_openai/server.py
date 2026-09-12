@@ -20,15 +20,25 @@ from .config import Config
 from .engine import TTSEngine, load_engine
 from .errors import OpenAIError, invalid_api_key
 from .routes_speech import health, models, speech
+from .routes_stt import router as stt_router
 from .routes_voices import router as voices_router
+from .stt import WhisperSidecar, ensure_model as ensure_stt_model
 from .voices import KYUTAI_CATALOG
 
 logger = logging.getLogger(__name__)
 
 
-def create_app(config: Config | None = None, engine: TTSEngine | None = None) -> FastAPI:
+def create_app(
+    config: Config | None = None,
+    engine: TTSEngine | None = None,
+    stt_sidecar: WhisperSidecar | None = None,
+) -> FastAPI:
     """Build the OpenAI-compatible app. ``engine=None`` defers model loading to
-    startup (production); tests pass a fake engine to stay fast and offline."""
+    startup (production); tests pass a fake engine to stay fast and offline.
+    ``stt_sidecar`` lets tests inject a stub ``whisper-server`` (MockTransport +
+    FakePopen) without a real binary; production builds/loads one in a
+    background thread and starts the STT watchdog when enabled.
+    """
     config = config or Config.from_env()
 
     @asynccontextmanager
@@ -53,9 +63,36 @@ def create_app(config: Config | None = None, engine: TTSEngine | None = None) ->
             stop = getattr(app.state, "_idle_stop", None)
             if stop is not None:
                 stop.set()
+            stt_stop = getattr(app.state, "_stt_stop", None)
+            if stt_stop is not None:
+                stt_stop.set()
+            sidecar = getattr(app.state, "stt", None)
+            if sidecar is not None:
+                try:
+                    sidecar.shutdown()
+                except Exception:  # pragma: no cover - defensive
+                    logger.exception("STT sidecar shutdown failed")
 
     app = FastAPI(title="pocket-tts-openai", version="0.1.0", lifespan=lifespan)
     app.state.config = config
+
+    # STT: persistent whisper-server sidecar. Production downloads the GGUF on
+    # first use and spawns in a background thread; the STT watchdog owns idle
+    # eviction + crash detection (PLAN-STT.md §6).
+    if config.stt_enabled:
+        if stt_sidecar is not None:
+            app.state.stt = stt_sidecar
+        else:
+            app.state.stt = None
+            threading.Thread(
+                target=_stt_start_background, args=(app, config), daemon=True
+            ).start()
+        if config.stt_idle_unload_s > 0:
+            stt_stop = threading.Event()
+            app.state._stt_stop = stt_stop
+            threading.Thread(
+                target=_stt_watchdog, args=(app, config, stt_stop), daemon=True
+            ).start()
 
     def _openai_error_handler(request: Request, exc: Exception) -> JSONResponse:
         # Starlette dispatches this handler only for the registered exception type.
@@ -85,7 +122,44 @@ def create_app(config: Config | None = None, engine: TTSEngine | None = None) ->
     app.get("/health")(health)
     # Voice catalog + cloning (private extension).
     app.include_router(voices_router, prefix="/v1/voices")
+    # STT endpoints (whisper.cpp sidecar) — only when enabled.
+    if config.stt_enabled:
+        app.include_router(stt_router)
     return app
+
+
+def _stt_start_background(app: FastAPI, config: Config) -> None:
+    """Download the GGUF (first run) and start the whisper-server sidecar off the
+    event loop. app.state.stt stays None until the sidecar object exists, so
+    STT routes return 503 during model download."""
+    try:
+        model = ensure_stt_model(config)
+        sidecar = WhisperSidecar(config=config, model_path=model)
+        app.state.stt = sidecar
+        if not sidecar.start():
+            logger.warning(
+                "whisper-server sidecar failed to start: %s", sidecar.last_error_hint()
+            )
+    except Exception:  # pragma: no cover - model download / build failures
+        logger.exception("STT startup failed; STT routes will return 503")
+
+
+def _stt_watchdog(
+    app: FastAPI, config: Config, stop: threading.Event
+) -> None:
+    """Dedicated STT watchdog: evict the idle sidecar (process-level) and watch
+    for crashes with one supervised restart. Runs only when stt_enabled and
+    stt_idle_unload_s > 0."""
+    interval = min(config.stt_idle_poll_s, max(5, config.stt_idle_unload_s // 2))
+    while not stop.wait(interval):
+        sidecar = getattr(app.state, "stt", None)
+        if sidecar is None:
+            continue  # still downloading / starting
+        try:
+            sidecar.stop_if_idle()
+            sidecar.watch()
+        except Exception:  # pragma: no cover - defensive
+            logger.exception("stt watchdog failed")
 
 
 def _idle_watchdog(app: FastAPI, config: Config, stop: threading.Event) -> None:

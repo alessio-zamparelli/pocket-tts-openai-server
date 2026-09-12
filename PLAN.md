@@ -223,6 +223,13 @@ pocket-tts-openai/
 5. **M5 — Packaging** *(parziale)*: ✅ Dockerfile CPU-only multi-stage (`deploy/Dockerfile`, uv guide, python:3.14-slim, non-root, volume `/data` → `HF_HOME` + registry voci), ✅ `.dockerignore`, ✅ `docker-compose.yml`, ✅ pipeline GHCR `.github/workflows/docker-publish.yml` (test gate + buildx + attestazioni). *Rimane:* warmup in build, esempi SDK openai, README IT/EN, `pocket-tts-openai warmup` CLI.
 6. **M6 — Rifiniture**: metriche `/health` (RTF, profondità coda), quantize opzionale,
    benchmark latenza, supporto `italian_24l` testato.
+7. **[x] STT — Whisper.cpp (M6 STT, vedi PLAN-STT.md)**: sidecar nativo `whisper-server`
+   (build CPU-only nel Dockerfile, ffmpeg runtime per mp3/m4a/webm), `POST
+   /v1/audio/transcriptions` + `/v1/audio/translations`, `whisper-1` in `/v1/models`,
+   download del GGUF al primo uso in `/data/cache/stt-models`, idle-eviction del sidecar
+   (process-kill + lazy restart, `POCKET_TTS_STT_IDLE_UNLOAD_S`), watchdog crash con
+   restart supervisionato, stubbed-sidecar test suite (30 test). *Manuali:* build
+   Docker/OpenVINO (no docker nel sandbox).
 
 ## 8. Evoluzione concorrenza (post-v1, non implementata ora)
 

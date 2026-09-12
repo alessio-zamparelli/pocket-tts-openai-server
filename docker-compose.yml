@@ -17,6 +17,10 @@ services:
       POCKET_TTS_PORT: "8000"
       # Uncomment to pre-warm some voices at startup:
       # POCKET_TTS_WARMUP_VOICES: alba,charles
+      # STT (whisper.cpp sidecar): off by default; turn on to expose
+      # POST /v1/audio/transcriptions + /v1/audio/translations.
+      # POCKET_TTS_STT_ENABLED: "true"
+      # POCKET_TTS_STT_MODEL: small   # ggml-small.bin (~466 MB, multilingual)
     volumes:
       # Persistent model weights + voice registry across restarts.
       - tts-data:/data

@@ -22,6 +22,9 @@ PLANNED_FORMATS = ("mp3", "opus", "aac", "flac")
 # All OpenAI TTS model aliases map to the single pocket-tts model.
 MODEL_ALIASES: tuple[str, ...] = ("tts-1", "tts-1-hd", "gpt-4o-mini-tts")
 
+# OpenAI STT model id advertised alongside the TTS aliases (whisper.cpp sidecar).
+STT_MODEL_ID = "whisper-1"
+
 _CREATED = 1700000000  # fixed timestamp so responses are deterministic
 
 
@@ -112,36 +115,62 @@ def speech(req: SpeechRequest, request: Request) -> Response:
     )
 
 
-def models() -> dict:
-    """List available models: every alias maps to the single pocket-tts model."""
-    return {
-        "object": "list",
-        "data": [
-            {"id": alias, "object": "model", "created": _CREATED, "owned_by": "pocket-tts"}
-            for alias in MODEL_ALIASES
-        ],
-    }
+def models(request: Request) -> dict:
+    """List available models: TTS aliases map to the single pocket-tts model;
+    when STT is enabled, ``whisper-1`` (the whisper.cpp sidecar) is appended."""
+    data = [
+        {"id": alias, "object": "model", "created": _CREATED, "owned_by": "pocket-tts"}
+        for alias in MODEL_ALIASES
+    ]
+    cfg: Config | None = getattr(request.app.state, "config", None)
+    if cfg is not None and cfg.stt_enabled:
+        data.append(
+            {"id": STT_MODEL_ID, "object": "model", "created": _CREATED, "owned_by": "whisper.cpp"}
+        )
+    return {"object": "list", "data": data}
 
 
 def health(request: Request) -> dict:
     """Liveness + engine stats. Status is 'loading' until the model is ready.
     After an idle eviction ``loaded`` is False (model waking on next request).
     Health probes deliberately do NOT touch the engine's idle timer.
+
+    When STT is enabled an ``stt`` block reports the whisper.cpp sidecar state;
+    probing /health never resets the sidecar's per-subsystem idle timer.
     """
+    body: dict = {}
     engine = getattr(request.app.state, "engine", None)
     if engine is None:
-        return {"status": "loading", "model": "pocket-tts"}
-    stats = engine.stats
-    return {
-        "status": "ok",
-        "model": "pocket-tts",
-        "language": engine.language,
-        "loaded": engine.loaded,
-        "idle_unload_s": engine._config.idle_unload_s,
-        "last_request_age_s": round(time.monotonic() - engine._last_activity, 1),
-        "unloads": stats.unloads,
-        "reloads": stats.reloads,
-        "requests": stats.requests,
-        "avg_rtf": round(stats.avg_rtf or 0.0, 4),
-        "queue_depth": stats.waiting,
-    }
+        body.update({"status": "loading", "model": "pocket-tts"})
+    else:
+        stats = engine.stats
+        body.update({
+            "status": "ok",
+            "model": "pocket-tts",
+            "language": engine.language,
+            "loaded": engine.loaded,
+            "idle_unload_s": engine._config.idle_unload_s,
+            "last_request_age_s": round(time.monotonic() - engine._last_activity, 1),
+            "unloads": stats.unloads,
+            "reloads": stats.reloads,
+            "requests": stats.requests,
+            "avg_rtf": round(stats.avg_rtf or 0.0, 4),
+            "queue_depth": stats.waiting,
+        })
+
+    cfg: Config | None = getattr(request.app.state, "config", None)
+    if cfg is not None and cfg.stt_enabled:
+        sidecar = getattr(request.app.state, "stt", None)
+        if sidecar is None:
+            body["stt"] = {
+                "enabled": True,
+                "model": cfg.stt_model,
+                "ready": False,
+                "pid": None,
+                "last_error": "initializing",
+                "idle_unload_s": cfg.stt_idle_unload_s,
+                "last_request_age_s": None,
+            }
+        else:
+            body["stt"] = sidecar.health_info()
+    return body
