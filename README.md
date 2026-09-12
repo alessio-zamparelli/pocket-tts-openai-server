@@ -152,7 +152,7 @@ request after the eviction just blocks a moment while the sidecar re-spawns
 | `STTS_STT_BIN` | `whisper-server` | sidecar binary on PATH |
 | `STTS_STT_HOST` | `127.0.0.1` | sidecar bind host (loopback only) |
 | `STTS_STT_PORT` | `8787` | sidecar bind port |
-| `STTS_STT_THREADS` | `4` | whisper compute threads |
+| `STTS_STT_THREADS` | `1` | whisper compute threads (default 1 so the sidecar doesn't starve the TTS engine on low-core/low-power hosts; raise on beefier hardware) |
 | `STTS_STT_LANGUAGE` | — | force transcription language (empty = auto-detect) |
 | `STTS_STT_IDLE_UNLOAD_S` | `300` | kill the sidecar after this many STT-idle seconds; `0` disables |
 | `STTS_STT_IDLE_POLL_S` | `30` | STT watchdog poll interval (seconds) |

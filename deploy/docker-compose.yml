@@ -74,8 +74,9 @@ services:
       # - STTS_STT_HOST=127.0.0.1
       # Internal HTTP port the app proxies to whisper-server.
       # - STTS_STT_PORT=8787
-      # whisper -t compute threads for the sidecar.
-      # - STTS_STT_THREADS=4
+      # whisper -t compute threads for the sidecar (default 1; raise on
+      # beefier hosts).
+      # - STTS_STT_THREADS=1
       # Force transcription language; empty = auto-detect.
       # - STTS_STT_LANGUAGE=
       # Kill the sidecar after this many seconds with no STT request

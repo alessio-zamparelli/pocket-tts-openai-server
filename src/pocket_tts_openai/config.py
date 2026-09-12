@@ -70,7 +70,9 @@ class Config:
     stt_bin: str = "whisper-server"  # sidecar binary path (tests/advanced override)
     stt_host: str = "127.0.0.1"  # internal loopback bind, never exposed
     stt_port: int = 8787  # internal HTTP port proxied by the app
-    stt_threads: int = 4  # whisper -t compute threads
+    stt_threads: int = 1  # whisper -t compute threads; 1 leaves low-power/
+    # SBC cores for the TTS engine (e.g. Intel N150 = 4 C-cores no HT) — raise
+    # on beefier hosts via STTS_STT_THREADS.
     stt_language: str = ""  # optional default whisper language; empty = auto-detect
     stt_idle_unload_s: int = 300  # kill the sidecar after this long without an STT
     # request (reclaims its RAM); 0 = off, independent of idle_unload_s.
@@ -109,7 +111,7 @@ class Config:
             stt_bin=env.get("STTS_STT_BIN", "whisper-server").strip() or "whisper-server",
             stt_host=env.get("STTS_STT_HOST", "127.0.0.1").strip() or "127.0.0.1",
             stt_port=_env_int(env, "STTS_STT_PORT", 8787),
-            stt_threads=_env_int(env, "STTS_STT_THREADS", 4),
+            stt_threads=_env_int(env, "STTS_STT_THREADS", 1),
             stt_language=env.get("STTS_STT_LANGUAGE", "").strip(),
             stt_idle_unload_s=_env_int(env, "STTS_STT_IDLE_UNLOAD_S", 300),
             stt_idle_poll_s=_env_int(env, "STTS_STT_IDLE_POLL_S", 30),
