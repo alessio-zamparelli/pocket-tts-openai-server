@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Literal
 
 from fastapi import Request, Response
@@ -123,7 +124,10 @@ def models() -> dict:
 
 
 def health(request: Request) -> dict:
-    """Liveness + engine stats. Status is 'loading' until the model is ready."""
+    """Liveness + engine stats. Status is 'loading' until the model is ready.
+    After an idle eviction ``loaded`` is False (model waking on next request).
+    Health probes deliberately do NOT touch the engine's idle timer.
+    """
     engine = getattr(request.app.state, "engine", None)
     if engine is None:
         return {"status": "loading", "model": "pocket-tts"}
@@ -132,6 +136,11 @@ def health(request: Request) -> dict:
         "status": "ok",
         "model": "pocket-tts",
         "language": engine.language,
+        "loaded": engine.loaded,
+        "idle_unload_s": engine._config.idle_unload_s,
+        "last_request_age_s": round(time.monotonic() - engine._last_activity, 1),
+        "unloads": stats.unloads,
+        "reloads": stats.reloads,
         "requests": stats.requests,
         "avg_rtf": round(stats.avg_rtf or 0.0, 4),
         "queue_depth": stats.waiting,

@@ -85,6 +85,15 @@ file, and its LRU cache slot).
 
 Custom voices are immediately usable as `voice` in `/v1/audio/speech`.
 
+### Idle RAM reclamation
+
+After `POCKET_TTS_IDLE_UNLOAD_S` (default 300 s = 5 min) with **no API
+requests**, the model is dropped from RAM (~60% of the resident footprint) to
+keep an idle API cheap. The next request **blocks while it reloads** (~1 s warm
+from the HF cache) instead of returning 503. Set `POCKET_TTS_IDLE_UNLOAD_S=0`
+to keep the model resident always. `/health` exposes `loaded`, `unloads`,
+`reloads` and `last_request_age_s`.
+
 ## Configuration (env)
 
 | var | default | notes |
@@ -95,6 +104,8 @@ Custom voices are immediately usable as `voice` in `/v1/audio/speech`.
 | `POCKET_TTS_QUANTIZE` | `false` | quantize the model |
 | `POCKET_TTS_MAX_CACHED_VOICES` | `32` | LRU voice-state cache size |
 | `POCKET_TTS_WARMUP_VOICES` | — | comma-separated voices to pre-encode at boot |
+| `POCKET_TTS_IDLE_UNLOAD_S` | `300` | evict the model from RAM after this many idle seconds; `0` disables |
+| `POCKET_TTS_IDLE_POLL_S` | `30` | idle-eviction watchdog poll interval (seconds) |
 | `POCKET_TTS_API_KEY` | — | if set, `Bearer <key>` required on `/v1/*` |
 | `POCKET_TTS_CACHE_DIR` | `~/.cache/pocket_tts` | base for cloned voice registry |
 | `POCKET_TTS_MAX_UPLOAD_MB` | `25` | max cloned-voice upload size |

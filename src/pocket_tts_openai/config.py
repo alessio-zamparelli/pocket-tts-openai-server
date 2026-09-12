@@ -48,6 +48,8 @@ class Config:
     max_cached_voices: int = 32
     cache_dir: str = ""  # empty = pocket-tts default (~/.cache/pocket_tts)
     max_upload_mb: int = 25
+    idle_unload_s: int = 300  # evict the model to free RAM after this much idle; 0 = off
+    idle_poll_s: int = 30  # watchdog cadence (only when idle_unload_s > 0)
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "Config":
@@ -70,4 +72,6 @@ class Config:
             max_cached_voices=_env_int(env, "POCKET_TTS_MAX_CACHED_VOICES", 32),
             cache_dir=env.get("POCKET_TTS_CACHE_DIR", ""),
             max_upload_mb=_env_int(env, "POCKET_TTS_MAX_UPLOAD_MB", 25),
+            idle_unload_s=_env_int(env, "POCKET_TTS_IDLE_UNLOAD_S", 300),
+            idle_poll_s=_env_int(env, "POCKET_TTS_IDLE_POLL_S", 30),
         )

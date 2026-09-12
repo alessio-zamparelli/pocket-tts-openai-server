@@ -39,7 +39,20 @@ def create_app(config: Config | None = None, engine: TTSEngine | None = None) ->
             app.state.engine = None
             thread = threading.Thread(target=_load_engine_background, args=(app, config), daemon=True)
             thread.start()
-        yield
+            if config.idle_unload_s > 0:
+                # RAM reclamation watchdog: evict the idle model (PLAN-idle-unload.md).
+                stop = threading.Event()
+                app.state._idle_stop = stop
+                wd = threading.Thread(
+                    target=_idle_watchdog, args=(app, config, stop), daemon=True
+                )
+                wd.start()
+        try:
+            yield
+        finally:
+            stop = getattr(app.state, "_idle_stop", None)
+            if stop is not None:
+                stop.set()
 
     app = FastAPI(title="pocket-tts-openai", version="0.1.0", lifespan=lifespan)
     app.state.config = config
@@ -73,6 +86,22 @@ def create_app(config: Config | None = None, engine: TTSEngine | None = None) ->
     # Voice catalog + cloning (private extension).
     app.include_router(voices_router, prefix="/v1/voices")
     return app
+
+
+def _idle_watchdog(app: FastAPI, config: Config, stop: threading.Event) -> None:
+    """Periodically evict the model after ``POCKET_TTS_IDLE_UNLOAD_S`` without
+    API requests. Health probes do NOT touch the engine's idle timer, so they
+    never reset the window (see PLAN-idle-unload.md).
+    """
+    interval = min(config.idle_poll_s, max(5, config.idle_unload_s // 2))
+    while not stop.wait(interval):
+        engine = getattr(app.state, "engine", None)
+        if engine is None:
+            continue  # still loading
+        try:
+            engine.maybe_unload()
+        except Exception:  # pragma: no cover - defensive
+            logger.exception("idle-unload watchdog failed")
 
 
 def _load_engine_background(app: FastAPI, config: Config) -> None:
