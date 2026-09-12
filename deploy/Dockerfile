@@ -61,9 +61,17 @@ WORKDIR /build
 # WHISPER_BUILD_EXAMPLES=ON (default) to build whisper-server and copy only
 # that one binary out — the extra examples never reach the runtime image.
 RUN git clone --depth 1 --branch ${WHISPER_CPP_REF} https://github.com/ggerganov/whisper.cpp.git \
+    # BUILD_SHARED_LIBS defaults to ON on Linux, which would link
+    # whisper-server against libwhisper.so.1 (and libggml*.so) and made the
+    # copied-out binary abort with exit 127:
+    #   error while loading shared libraries: libwhisper.so.1: cannot open
+    # - Fix: build the whisper libraries statically (libwhisper.a, libggml.a)
+    #   so the single whisper-server binary is self-contained and only needs
+    #   the system libs present in the runtime stage (libgomp1, libstdc++).
     && cmake -S whisper.cpp -B build \
         -DCMAKE_BUILD_TYPE=Release \
         -DWHISPER_BUILD_TESTS=OFF \
+        -DBUILD_SHARED_LIBS=OFF \
     && cmake --build build --config Release --target whisper-server -j"$(nproc)" \
     && mkdir -p /out/bin \
     && cp build/bin/whisper-server /out/bin/
