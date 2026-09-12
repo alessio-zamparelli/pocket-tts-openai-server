@@ -46,6 +46,8 @@ class Config:
     warmup_voices: tuple[str, ...] = ()
     quantize: bool = False
     max_cached_voices: int = 32
+    cache_dir: str = ""  # empty = pocket-tts default (~/.cache/pocket_tts)
+    max_upload_mb: int = 25
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "Config":
@@ -66,4 +68,6 @@ class Config:
             warmup_voices=warmup,
             quantize=env.get("POCKET_TTS_QUANTIZE", "").lower() in ("1", "true", "yes"),
             max_cached_voices=_env_int(env, "POCKET_TTS_MAX_CACHED_VOICES", 32),
+            cache_dir=env.get("POCKET_TTS_CACHE_DIR", ""),
+            max_upload_mb=_env_int(env, "POCKET_TTS_MAX_UPLOAD_MB", 25),
         )

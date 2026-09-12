@@ -11,6 +11,10 @@ dependencies = [
     "uvicorn>=0.29",
     "pydantic>=2.6",
     "numpy>=1.24",
+    # Multipart/form-data parsing for POST /v1/voices (voice cloning).
+    # FastAPI imports it lazily only when Form/UploadFile routes exist, so it
+    # must be a direct dep instead of relying on pocket-tts pulling it in.
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]

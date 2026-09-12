@@ -14,11 +14,13 @@ from typing import cast
 import uvicorn
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
+from pathlib import Path
 
 from .config import Config
 from .engine import TTSEngine, load_engine
 from .errors import OpenAIError, invalid_api_key
 from .routes_speech import health, models, speech
+from .routes_voices import router as voices_router
 from .voices import KYUTAI_CATALOG
 
 logger = logging.getLogger(__name__)
@@ -68,14 +70,18 @@ def create_app(config: Config | None = None, engine: TTSEngine | None = None) ->
     app.post("/v1/audio/speech", response_model=None)(speech)
     app.get("/v1/models")(models)
     app.get("/health")(health)
+    # Voice catalog + cloning (private extension).
+    app.include_router(voices_router, prefix="/v1/voices")
     return app
 
 
 def _load_engine_background(app: FastAPI, config: Config) -> None:
     """Load pocket-tts off the event loop; /speech returns 503 until it lands."""
     try:
-        app.state.engine = load_engine(config)
-        logger.info("engine ready: sample_rate=%d voices=%d", app.state.engine.sample_rate, len(KYUTAI_CATALOG))
+        engine = load_engine(config)
+        app.state.engine = engine
+        logger.info("engine ready: sample_rate=%d voices=%d", engine.sample_rate, len(KYUTAI_CATALOG))
+        engine.warmup()
     except Exception:
         logger.exception("engine failed to load; /speech will keep returning 503")
 

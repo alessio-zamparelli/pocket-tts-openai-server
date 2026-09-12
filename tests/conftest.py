@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -11,6 +12,15 @@ import pytest
 from pocket_tts_openai.config import Config
 from pocket_tts_openai.engine import TTSEngine
 from pocket_tts_openai.server import create_app
+from pocket_tts_openai.voice_registry import VoiceRegistry
+
+
+def fake_export_state(state: object, dest: str | Path) -> None:
+    """Stand-in for ``pocket_tts.export_model_state``: materialize a file so
+    registry paths exist (DELETE cleanup / GET safetensors flags behave like
+    production)."""
+    del state
+    Path(dest).write_bytes(b"fake-safetensors")
 
 
 class FakeTTSModel:
@@ -31,13 +41,14 @@ class FakeTTSModel:
         self._inside_generate = 0
         self.overlap_seen = False
         self._overlap_lock = threading.Lock()
+        self.stream_chunks = 4  # 4 x 0.25 s = 1.0 s, matching generate_audio
 
     def get_state_for_audio_prompt(self, voice: str) -> tuple[str, str]:
         time.sleep(self._encode_seconds)
         self.encode_calls.append(voice)
         return ("state", voice)
 
-    def generate_audio(self, model_state: object, text_to_generate: str) -> np.ndarray:
+    def _generate_impl(self, text_to_generate: str):
         with self._overlap_lock:
             self._inside_generate += 1
             if self._inside_generate > 1:
@@ -48,7 +59,19 @@ class FakeTTSModel:
             with self._overlap_lock:
                 self._inside_generate -= 1
         self.generate_calls.append(text_to_generate)
+
+    def generate_audio(self, model_state: object, text_to_generate: str) -> np.ndarray:
+        self._generate_impl(text_to_generate)
         return np.zeros(self.sample_rate, dtype=np.float32)
+
+    def generate_audio_stream(self, model_state: object, text_to_generate: str):
+        """Yield ``n * chunk_seconds`` of silence, sleeping per chunk so the
+        stream serialization / disconnect behavior is observable."""
+        self._generate_impl(text_to_generate)
+        chunk = self.sample_rate // 4  # 0.25 s per chunk
+        for _ in range(self.stream_chunks):
+            time.sleep(0.01)
+            yield np.zeros(chunk, dtype=np.float32)
 
 
 @pytest.fixture
@@ -62,8 +85,18 @@ def config() -> Config:
 
 
 @pytest.fixture
-def engine(fake_model: FakeTTSModel, config: Config) -> TTSEngine:
-    return TTSEngine(fake_model, config=config)
+def registry(tmp_path) -> VoiceRegistry:
+    return VoiceRegistry(directory=tmp_path / "voices")
+
+
+@pytest.fixture
+def engine(fake_model: FakeTTSModel, config: Config, registry: VoiceRegistry) -> TTSEngine:
+    return TTSEngine(
+        fake_model,
+        config=config,
+        registry=registry,
+        export_state=fake_export_state,
+    )
 
 
 @pytest.fixture

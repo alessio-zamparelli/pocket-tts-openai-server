@@ -210,15 +210,15 @@ pocket-tts-openai/
 
 ## 7. Milestone
 
-1. **M1 — Scheletro funzionante**: pyproject, config, `engine.py` con modello singleton +
+1. **[x] M1 — Scheletro funzionante**: pyproject, config, `engine.py` con modello singleton +
    lock + coda FIFO, `/v1/audio/speech` limitato a `wav`+`pcm`, mappa voci fissa,
    `/health`, `/v1/models`. Test contratto con modello mockato.
 2. **M2 — Formati compressi**: `encoders.py` con ffmpeg (rilevamento runtime), fallback 400
    documentato; test sui byte-header di ogni formato.
-3. **M3 — Voci**: cache LRU, prefetch/warmup all'avvio (`POCKET_TTS_WARMUP_VOICES`),
+3. **[x] M3 — Voci**: cache LRU, prefetch/warmup all'avvio (`POCKET_TTS_WARMUP_VOICES`),
    esportazione `.safetensors`, `GET/POST/DELETE /v1/voices` (catalogo + voice cloning
    con persistenza in `voices.json`).
-4. **M4 — Streaming**: chunked transfer per `wav`/`pcm` via `generate_audio_stream`
+4. **[x] M4 — Streaming**: chunked transfer per `wav`/`pcm` via `generate_audio_stream`
    (primo chunk ~200 ms), opzione `stream` nel body; formati compressi bufferizzati.
 5. **M5 — Packaging**: Dockerfile CPU-only (torch cpu index) con warmup in build,
    `docker-compose`, esempi SDK openai, README IT/EN, `pocket-tts-openai warmup` CLI.

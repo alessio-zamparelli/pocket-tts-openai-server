@@ -5,12 +5,12 @@ from __future__ import annotations
 from typing import Literal
 
 from fastapi import Request, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .config import Config
-from .engine import TTSEngine, pcm_to_wav
+from .engine import TTSEngine, pcm_to_wav, streaming_wav_header
 from .errors import OpenAIError, invalid_request, unavailable
-from .voices import resolve_voice
 
 AudioFormat = Literal["wav", "pcm", "mp3", "opus", "aac", "flac"]
 
@@ -35,6 +35,9 @@ class SpeechRequest(BaseModel):
         default=None, description="Accepted for compatibility but ignored (see README).")
     language: str | None = Field(
         default=None, description="Server-configured language always wins; logged and ignored if different.")
+    stream: bool = Field(
+        default=False,
+        description="Private extension: chunked transfer for wav/pcm. Ignored (buffered) for compressed formats.")
 
 
 def _engine_or_503(request: Request) -> TTSEngine:
@@ -42,6 +45,19 @@ def _engine_or_503(request: Request) -> TTSEngine:
     if engine is None:
         raise unavailable("Model is still loading; retry shortly.")
     return engine
+
+
+def _stream_speech_pcm(engine: TTSEngine, text: str, voice: str):
+    """Yield raw s16le PCM chunks from the engine's streaming generator."""
+    for chunk in engine.generate_pcm_stream(text, voice):
+        yield chunk
+
+
+def _stream_speech_wav(engine: TTSEngine, text: str, voice: str):
+    """Yield a size-less WAV header then s16le PCM chunks."""
+    yield streaming_wav_header(engine.sample_rate)
+    for chunk in engine.generate_pcm_stream(text, voice):
+        yield chunk
 
 
 def speech(req: SpeechRequest, request: Request) -> Response:
@@ -55,14 +71,35 @@ def speech(req: SpeechRequest, request: Request) -> Response:
         raise invalid_request(
             f"response_format '{req.response_format}' is not supported yet; "
             f"supported formats: {', '.join(SUPPORTED_FORMATS)}.")
-    config: Config = request.app.state.config
-    try:
-        resolved_voice = resolve_voice(req.voice, config.voice_map)
-    except ValueError as exc:
-        raise invalid_request(str(exc)) from exc
 
     engine = _engine_or_503(request)
-    pcm = engine.generate_pcm(req.input, resolved_voice)
+    # Voice resolution (aliases, catalog, custom registry) happens inside the
+    # engine; propagate unknown-voice as a 400.
+
+    def _speech_error() -> Exception:
+        return invalid_request(
+            f"Unknown voice {req.voice!r}. Use an OpenAI alias, a catalog voice, "
+            "a custom voice, an https:// URL or an hf:// reference."
+        )
+
+    # streaming path (wav/pcm)
+    if req.stream and req.response_format in SUPPORTED_FORMATS:
+        filename = "speech.pcm" if req.response_format == "pcm" else "speech.wav"
+        media_type = "audio/pcm" if req.response_format == "pcm" else "audio/wav"
+        gen = _stream_speech_pcm if req.response_format == "pcm" else _stream_speech_wav
+        try:
+            return StreamingResponse(
+                gen(engine, req.input, req.voice),
+                media_type=media_type,
+                headers={"Content-Disposition": f"attachment; filename={filename}"},
+            )
+        except ValueError:
+            raise _speech_error() from None
+
+    try:
+        pcm = engine.generate_pcm(req.input, req.voice)
+    except ValueError:
+        raise _speech_error() from None
     if req.response_format == "pcm":
         body, filename, media_type = pcm, "speech.pcm", "audio/pcm"
     else:

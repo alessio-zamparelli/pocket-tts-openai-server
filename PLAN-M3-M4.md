@@ -4,6 +4,10 @@
 > grounded in the current codebase (post-M1) and the **installed** pocket-tts
 > 3.1.0 API. Plan only — no code written yet.
 
+> **STATUS: IMPLEMENTED.** M3 + M4 landed together on `feat/voices-streaming`
+> (70 tests green). See the deviations in §4 below and the README for the
+> live behavior. (This §4 is appended post-implementation.)
+
 ## 0. Corrections to PLAN.md (verified against installed pocket-tts 3.1.0)
 
 1. **`export_model_state` is module-level, not a method.**
@@ -140,6 +144,18 @@ voice). Same loop serves both prefetch-at-boot and the future
 
 ## 2. M4 — Streaming (`generate_audio_stream`, chunked wav/pcm)
 
+### 2.0 Feasibility VERIFIED (2026-09-12, probe against pocket-tts 3.1.0, real model)
+
+Ran `generate_audio_stream` on the loaded model (voice `alba`, ~25 s of text):
+
+- Yields **uniform chunks: 7680 bytes** = 3840 samples = **160 ms** of 24 kHz
+  mono s16le audio. Chunk boundary math for the WAV header is trivial.
+- **TTFT (first chunk): 0.89 s** with a warm model. PLAN.md's "~200 ms" claim
+  does not reproduce on this hardware — expect ~0.9 s, document that.
+- Streaming RTF: **0.58×** (24.6 s audio in 14.4 s) — comfortably real-time.
+- Chunks arrive as torch tensors; convert per chunk with `.numpy().tobytes()`
+  (s16le mono is already the native layout).
+
 ### 2.1 Engine: `TTSEngine.generate_pcm_stream(text, voice) -> Iterator[bytes]`
 
 - Resolve voice + acquire `_gen_lock` **for the whole stream duration**
@@ -190,10 +206,11 @@ Starlette; do **not** set `Content-Length`.
 
 ### 2.4 First-token latency target
 
-PLAN.md cites ~200 ms to first chunk. During implementation, measure
-TTFT (time to first chunk) with the benchmark harness from
-`/tmp/tts_bench.py` extended with a streaming client; record in README
-(perf table). This is a measurement task, not a hard gate.
+PLAN.md cites ~200 ms to first chunk. **Measured TTFT is 0.89 s** on this
+hardware (i7-9750H, warm model). During implementation, re-measure TTFT
+end-to-end (including FastAPI/uvicorn overhead) with the benchmark harness
+extended with a streaming client; record in README (perf table). This is a
+measurement task, not a hard gate.
 
 ### 2.5 Tests (`tests/test_streaming.py`, fake engine)
 
@@ -231,3 +248,38 @@ new tests as above. No new dependencies (multipart via existing
 
 Estimate: M3 ≈ 2–3 focused sessions, M4 ≈ 1–2 (the WAV-header verification
 is the only genuinely unknown bit).
+
+---
+
+## 4. Post-implementation deviations (verified against the running server)
+
+1. **`except payload_too_large` bug (fixed).** The route originally wrote
+   `except payload_too_large` where `payload_too_large` is a *factory function*
+   returning an `OpenAIError`, not an exception class — evaluating that `except`
+   clause itself raised `TypeError: catching classes that do not inherit from
+   BaseException` and turned every clone failure into a 500. Fixed to
+   `except OpenAIError` and covered by a regression test
+   (`test_create_voice_clone_failure_is_400_not_500`).
+2. **Voice cloning is gated upstream.** On the public (non-auth'd) model,
+   `get_state_for_audio_prompt(audio_path)` raises
+   `ValueError: VOICE_CLONING_UNSUPPORTED` because the voice-cloning adapter
+   weights (gated `kyutai/pocket-tts`) aren't downloadable without HF auth.
+   The route now returns this as a clean **400** ("Failed to encode voice
+   prompt …"), not a 500. Voice cloning therefore works end-to-end only once
+   HF auth is configured (`uvx hf auth login`) and the cloning model is
+   available.
+3. **DELETE unknown voice returns 404** (matches the spec + OpenAI semantics),
+   not the earlier 400 — added a `not_found()` helper. Comparable delivery:
+   `{"error":{"message":"Unknown custom voice 'ghost'.","type":...,
+   "code":"not_found"}}` with HTTP 404.
+4. **`load_engine` now attaches the registry** (`VoiceRegistry.from_config_dir`
+   - `registry.load()`) so production serving has the same custom-voice path
+   the tests inject (this was missing in the first pass and made
+   `POST /v1/voices` 400 with "voice registry is not configured").
+5. **WAV streaming header verified live** with Python's `wave` module on a real
+   streamed response: `RIFF`/`data` sizes = `0xFFFFFFFF`, mono 24 kHz, payload
+   is whole 7680-byte PCM chunks.
+6. **Test/tooling notes:** the bundled pi-lens LSP reports flaky
+   `fastapi`/`numpy`/`pocket_tts` "could not resolve" for venv imports — the
+   standalone Pyright CLI on the same tree is `0 errors` and the full
+   `pytest` suite is green, so those are LSP-infrastructure false positives.

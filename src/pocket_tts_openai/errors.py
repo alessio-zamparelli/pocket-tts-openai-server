@@ -34,3 +34,19 @@ def unavailable(message: str) -> OpenAIError:
 
 def invalid_api_key(message: str) -> OpenAIError:
     return OpenAIError(message, status=401, type_="invalid_request_error", code="invalid_api_key")
+
+
+def conflict(message: str) -> OpenAIError:
+    return OpenAIError(message, status=409, type_="invalid_request_error", code="conflict")
+
+
+def not_found(message: str, code: str | None = "not_found") -> OpenAIError:
+    return OpenAIError(message, status=404, type_="invalid_request_error", code=code)
+
+
+def payload_too_large(message: str) -> OpenAIError:
+    return OpenAIError(message, status=413, type_="invalid_request_error", code="entity_too_large")
+
+
+def method_not_allowed(message: str) -> OpenAIError:
+    return OpenAIError(message, status=405, type_="invalid_request_error", code="method_not_allowed")

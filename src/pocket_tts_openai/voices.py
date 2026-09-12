@@ -37,6 +37,16 @@ KYUTAI_CATALOG: set[str] = {
     "estelle",    # fr
 }
 
+# Language tag per catalog voice (informational; shown in GET /v1/voices).
+# Anything not listed here defaults to "en".
+VOICE_LANGUAGE: dict[str, str] = {
+    "giovanni": "it",
+    "lola": "es",
+    "juergen": "de",
+    "rafael": "pt",
+    "estelle": "fr",
+}
+
 _PASSTHROUGH_PREFIXES = ("hf://", "https://", "http://")
 
 
