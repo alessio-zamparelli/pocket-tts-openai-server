@@ -30,6 +30,13 @@ one model resident in RAM (no per-request spawn → RAM stays flat, matching the
 M5.5 RAM-frugality theme), crash-isolated from Python, and the request path is
 a thin OpenAI-contract translation layer we fully own and can unit-test.
 
+Idle RAM reclamation extends M5.5's policy to the STT sidecar (see
+**[Idle eviction of the sidecar](#6-idle-eviction-of-the-sidecar-mirrors-m55-process-level)**): because
+whisper-server has **no `/unload` endpoint** (only `POST /load` + `GET /health`),
+the eviction mechanism is **process kill + lazy restart** — which reclaims
+~100% of the sidecar's RSS and is structurally simpler than the in-process
+eviction TTS needs.
+
 ## Endpoint surface (OpenAI-compatible)
 
 | Method/Path | Behavior |
@@ -78,6 +85,10 @@ by `POST /v1/voices`); the same `max_upload_mb` limit applies to the audio file.
     - **crash/watch**: watchdog thread asserts the pid is alive; if it dies,
       mark `down` → routes return 503 and log; v1 attempts **one** supervised
       restart (simple), then stays down until a manual/health reset request,
+    - **idle state**: `last_activity` (monotonic), `touch()` bumped by STT API
+      requests only, `stop_if_idle(now)` = `terminate()` + `wait()` after the
+      per-subsystem idle window (see §6), and `ensure_started()` doing a
+      single-flight re-spawn + readiness poll on wake,
     - **shutdown**: `terminate()` in `lifespan` finally.
   - When `stt_enabled=false` (or the binary/model is unavailable) the sidecar
     is not spawned and STT routes return 503 with a clear message; TTS is
@@ -133,18 +144,56 @@ by `POST /v1/voices`); the same `max_upload_mb` limit applies to the audio file.
 | `POCKET_TTS_STT_PORT` | `8787` | Internal HTTP port proxied by the app. |
 | `POCKET_TTS_STT_THREADS` | `4` | `-t` compute threads for the sidecar. |
 | `POCKET_TTS_STT_LANGUAGE` | `""` | Optional default language; empty = auto-detect. |
+| `POCKET_TTS_STT_IDLE_UNLOAD_S` | `300` | Kill the sidecar (reclaim its RAM) after this long without an STT request; `0` disables (independent of `POCKET_TTS_IDLE_UNLOAD_S`). |
+| `POCKET_TTS_STT_IDLE_POLL_S` | `30` | Dedicated STT watchdog cadence (only when idle-unload `> 0`). |
 
 ### 5. `/v1/models` + `/health`
 
 - `/v1/models` appends `{"id": "whisper-1", "object": "model", "created": …,
   "owned_by": "whisper.cpp"}`; TTS aliases untouched (backward compatible).
-- `/health` adds `"stt": {"enabled", "model", "ready", "pid", "last_error"}`
-  (or omits when disabled). Health probes must NOT reset any STT activity timer
-  (none in v1 — sidecar keeps the model resident; see rejected alternatives).
+- `/health` adds `"stt": {"enabled", "model", "ready", "pid", "last_error",
+  "idle_unload_s", "last_request_age_s"}` (or omits when disabled). Health
+  probes do NOT reset the STT idle timer — only real STT API requests bump
+  `last_activity` (same rule as M5.5's TTS watchdog).
 
-### 6. Tests (keep 88 green + new)
+### 6. Idle eviction of the sidecar (mirrors M5.5, process-level)
 
-- Config parse tests for every `POCKET_TTS_STT_*` knob (+ `ENABLED` off/on).
+**Mechanism: process kill + lazy restart** (whisper-server has no `/unload`;
+only `/load` + `/health`). Killing the sidecar reclaims ~100% of its RSS
+(whisper `small` loads to roughly ~1 GB RSS on CPU); there is no in-process
+object to drop, so none of M5.5's `gc.collect()` / `malloc_trim` machinery
+applies — the C process just dies and its pages return to the OS.
+
+- **Config (separate knob, independent of TTS):**
+  - `POCKET_TTS_STT_IDLE_UNLOAD_S` (default `300`, `0` disables)
+  - `POCKET_TTS_STT_IDLE_POLL_S` (default `30`)
+- **Per-subsystem timer:** `WhisperSidecar.last_activity` is bumped only by STT
+  API requests (`transcriptions` / `translations` routes call `touch()`);
+  `/health` probes and TTS traffic never touch it — so STT evicts only on STT
+  silence, independent of what the TTS engine is doing.
+- **Stop path:** a dedicated daemon thread in `lifespan` (new, not shared with
+  the TTS `_idle_watchdog`) loops `wait(poll_s)` → `sidecar.stop_if_idle(now)`:
+  `terminate()` + `wait(timeout)` (graceful, not `SIGKILL`), mark `ready=False`,
+  log a stats counter `stt_idle_stops`. Only spawned when
+  `stt_enabled` and `stt_idle_unload_s > 0`.
+- **Wake path (block until ready, no 503):** the first STT request after an
+  idle stop calls `sidecar.ensure_started()` — a **single-flight** re-spawn
+  guarded by a lock (concurrent waiters share one restart, like M5.5's
+  `_reload_lock`), then poll `/health` until 200. Warm restart ≈
+  `whisper-server` exec (~50 ms) + `small` load from `/data` (~0.5–2 s CPU) →
+  the request blocks briefly then succeeds; no 503 in the wake path. If the
+  re-spawn fails (missing binary/model, port taken), return 503.
+- **Interplay with crash-watch:** the watchdog must not race `stop_if_idle`
+  against an unexpected crash restart — `stop_if_idle` and the crash handler
+  coordinate on the same restart lock; an idle stop is marked as intended so
+  the crash-watcher doesn't immediately respawn it.
+- **Stats/observability:** `stt_idle_stops` / `stt_idle_starts` counters on the
+  sidecar; surfaced in `/health`'s `stt` block.
+
+### 7. Tests (keep 88 green + new)
+
+- Config parse tests for every `POCKET_TTS_STT_*` knob (+ `ENABLED` off/on,
+  `IDLE_UNLOAD_S`/`IDLE_POLL_S` parse and `0` disables).
 - Routes tests (stub HTTP server as fake sidecar): happy-path transcription for
   each `response_format`, translations (`translate=true` observed on the stub),
   unknown-model → 400, missing/oversized file → 400 (`payload_too_large`),
@@ -152,14 +201,21 @@ by `POST /v1/voices`); the same `max_upload_mb` limit applies to the audio file.
 - Sidecar lifecycle: `Popen` spawn with stub binary + fake `/health`; readiness
   wait; crash detected → 503; terminate on shutdown (all synchronous, no real
   sleeps — use short timeouts/small poll intervals).
-- Target: ~10–14 new tests, existing 88 stay green; pyright clean.
+- Idle-eviction tests (injectable `now`, stub sidecar): `stop_if_idle` evicts
+  after the window; no eviction before the window or when `IDLE_UNLOAD_S=0`;
+  first request after idle `ensure_started()` respawns and returns 200 (assert
+  single-flight: concurrent waiters trigger one re-spawn); health probes do not
+  bump the STT timer.
+- Target: ~14–18 new tests, existing 88 stay green; pyright clean.
 
-### 7. README + PLAN.md
+### 8. README + PLAN.md
 
-- Config table: document the `POCKET_TTS_STT_*` knobs.
+- Config table: document the `POCKET_TTS_STT_*` knobs (incl. idle eviction).
 - New "Speech-To-Text" section: quickstart curl for `transcriptions`
   (`response_format=json`) and `translations`; note default `small` model,
-  ffmpeg for non-WAV, `/data` volume holds GGUF weights.
+  ffmpeg for non-WAV, `/data` volume holds GGUF weights, and that the sidecar
+  is evicted after `POCKET_TTS_STT_IDLE_UNLOAD_S` of STT inactivity (next
+  request restarts it).
 - Container/mount note: host folders bind-mounted at `/data` must be owned
   `10001:10001` so the sidecar/user can write model weights.
 - PLAN.md milestone table: add M6 STT row (status: planned).
@@ -196,10 +252,12 @@ encoder speed-up at larger models (medium/large-v3) or on Intel dGPU.
 - **Running `whisper-server` on a second public port:** would bypass our
   OpenAI contract, auth (API-key middleware), errors, `/v1/models`; rejected —
   the app owns `/v1/audio/*` and proxies internally.
-- **Idle-eviction of the sidecar:** would require kill+restart of the process
-  (no in-process eviction like M5.5). Out of v1 scope; noted as a possible M6.1
-  (stop sidecar when idle, warm-start on next request). Kept resident for now
-  (predictable latency; one model ~1 GB).
+- **Idle-eviction of the sidecar (formerly out-of-scope, now §6):** only
+  possible as process kill + lazy restart (no in-process eviction like M5.5),
+  because whisper-server has no `/unload`. Adopted in v1 with a
+  dedicated watchdog + separate `POCKET_TTS_STT_IDLE_UNLOAD_S` knob and a
+  block-until-ready wake path (~0.5–2 s warm) — reclaims ~1 GB of sidecar RAM
+  on STT silence with no traffic cost beyond a brief warm-up on the next call.
 - **ffmpeg-less runtime (WAV-only STT):** cuts image size but OpenAI clients
   upload `mp3`/`m4a`/`webm` by default; include ffmpeg for real-world compat.
 
@@ -211,4 +269,7 @@ M6 · STT endpoint. Files: `deploy/Dockerfile`, `config.py`, `server.py`,
 
 > **Status: PLANNED** — decisions locked: persistent `whisper-server` sidecar;
 > default `small` (multilingual); transcriptions + translations + `/v1/models`;
-> OpenVINO deferred as a documented build+env follow-up (native ggml CPU v1).
+> OpenVINO deferred as a documented build+env follow-up (native ggml CPU v1);
+> **idle RAM eviction for the sidecar (process kill + lazy restart)** with a
+> separate `POCKET_TTS_STT_IDLE_UNLOAD_S`, per-subsystem timer, dedicated
+> watchdog, and block-until-ready wake.
