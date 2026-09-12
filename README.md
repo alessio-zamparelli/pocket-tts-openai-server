@@ -12,7 +12,7 @@ powered by [Kyutai's pocket-tts](https://github.com/kyutai-labs/pocket-tts) —
 
 ```sh
 uv sync                                # deps without the engine (tests use a fake model)
-uv run pytest                          # 69 tests
+uv run pytest                          # 70 tests
 uv sync --extra engine                 # + pocket-tts (CPU-only torch on Linux, see pyproject)
 uv run pocket-tts-openai               # serve on :8000
 ```
@@ -99,6 +99,44 @@ Custom voices are immediately usable as `voice` in `/v1/audio/speech`.
 | `POCKET_TTS_CACHE_DIR` | `~/.cache/pocket_tts` | base for cloned voice registry |
 | `POCKET_TTS_MAX_UPLOAD_MB` | `25` | max cloned-voice upload size |
 
+## Container (Docker)
+
+CPU-only multi-stage image following the official
+[uv Docker guide](https://docs.astral.sh/uv/guides/integration/docker/) —
+`deploy/Dockerfile` (`python:3.14-slim` base, pinned `uv`, Python 3.14):
+
+```sh
+docker build -f deploy/Dockerfile -t pocket-tts-openai .
+docker run --rm -p 8080:8000 \
+  -v tts-data:/data \
+  pocket-tts-openai
+# -> GET  http://localhost:8080/health
+#    POST http://localhost:8080/v1/audio/speech
+```
+
+Or `docker compose up -d --build` (see `docker-compose.yml`).
+
+- **Runtime user**: non-root (`tts`, uid 10001), exposes `8000`.
+- **Persistent volume** `/data`: model weights (`HF_HOME=/data/hf`) + the
+  voice registry (`POCKET_TTS_CACHE_DIR=/data/cache` → `/data/cache/voices`).
+  Mount it so weights are downloaded once and cloned voices survive restarts.
+- **No CUDA**: `torch` resolves from the PyTorch **CPU** wheel index via
+  `uv.lock` (`[tool.uv.sources]`); nothing NVIDIA layers into the image.
+- The bind host defaults to `0.0.0.0` inside the container (port `8000`);
+  override with `POCKET_TTS_HOST`/`POCKET_TTS_PORT`.
+- Model weights download on first boot (~430 MB); warm the cache beforehand
+  with `POCKET_TTS_WARMUP_VOICES` if you want them pre-encoded at startup.
+
+Image is published to **GHCR** (`ghcr.io/<repo>`) by the
+`.github/workflows/docker-publish.yml` pipeline: tests gate the build, then
+Buildx publishes `latest` on `main` pushes + semver tags (`v*.*.*`), tagged
+`latest`/`<major>.<minor>`/`<version>`, with GHA build-cache and SLSA
+attestations. Build locally to verify (no GitHub account needed):
+
+```sh
+git tag v0.1.0 && git push origin main --tags  # triggers the workflow
+```
+
 ## Performance (benchmarked, i7-9750H, 12 threads, 8 GiB, CPU)
 
 | | short (28 ch) | medium (290 ch) |
@@ -135,4 +173,8 @@ src/pocket_tts_openai/
   server.py         create_app, API-key middleware, background model load + warmup
   errors.py         OpenAI-shaped error helpers
 tests/              contract + engine + registry + voices + streaming (fake model)
+deploy/Dockerfile   multi-stage CPU-only image (uv, python:3.14-slim, non-root)
+docker-compose.yml  local build/run convenience
+.github/workflows/  docker-publish.yml -> GHCR (tests gate, buildx, attestations)
+.dockerignore       keep .venv/.git out of the build context
 ```

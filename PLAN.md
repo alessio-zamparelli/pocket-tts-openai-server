@@ -220,8 +220,7 @@ pocket-tts-openai/
    con persistenza in `voices.json`).
 4. **[x] M4 — Streaming**: chunked transfer per `wav`/`pcm` via `generate_audio_stream`
    (primo chunk ~200 ms), opzione `stream` nel body; formati compressi bufferizzati.
-5. **M5 — Packaging**: Dockerfile CPU-only (torch cpu index) con warmup in build,
-   `docker-compose`, esempi SDK openai, README IT/EN, `pocket-tts-openai warmup` CLI.
+5. **M5 — Packaging** *(parziale)*: ✅ Dockerfile CPU-only multi-stage (`deploy/Dockerfile`, uv guide, python:3.14-slim, non-root, volume `/data` → `HF_HOME` + registry voci), ✅ `.dockerignore`, ✅ `docker-compose.yml`, ✅ pipeline GHCR `.github/workflows/docker-publish.yml` (test gate + buildx + attestazioni). *Rimane:* warmup in build, esempi SDK openai, README IT/EN, `pocket-tts-openai warmup` CLI.
 6. **M6 — Rifiniture**: metriche `/health` (RTF, profondità coda), quantize opzionale,
    benchmark latenza, supporto `italian_24l` testato.
 

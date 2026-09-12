@@ -1,0 +1,32 @@
+# Local development / self-host convenience wrapper around deploy/Dockerfile.
+# Not needed for GitHub Actions (GHCR publishes from the workflow directly).
+# Usage: docker compose up -d --build   (then POST to http://localhost:8080)
+name: pocket-tts-openai
+
+services:
+  tts:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    image: pocket-tts-openai:local
+    ports:
+      - "8080:8000"
+    environment:
+      # Optional knobs (see README "Configuration (env)"). API key left unset.
+      POCKET_TTS_HOST: 0.0.0.0
+      POCKET_TTS_PORT: "8000"
+      # Uncomment to pre-warm some voices at startup:
+      # POCKET_TTS_WARMUP_VOICES: alba,charles
+    volumes:
+      # Persistent model weights + voice registry across restarts.
+      - tts-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).read()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 120s
+      retries: 3
+
+volumes:
+  tts-data:
