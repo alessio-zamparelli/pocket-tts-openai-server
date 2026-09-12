@@ -4,15 +4,16 @@ OpenAI-compatible TTS server (`POST /v1/audio/speech`, `stream` chunked PCM/WAV)
 powered by [Kyutai's pocket-tts](https://github.com/kyutai-labs/pocket-tts) —
 100M-param speech synthesis on CPU.
 
-> Work in progress — see `./PLAN.md`. **M1** (server skeleton), **M2**
-> (audio formats), **M3** (voice catalog + cloning `GET/POST/DELETE /v1/voices`)
-> and **M4** (streamed `wav`/`pcm`) are implemented.
+> **Implemented milestones**: M1 server skeleton, M2 audio formats, M3 voice
+> catalog + cloning (`GET/POST/DELETE /v1/voices`), M4 streamed `wav`/`pcm`,
+> M5.5 idle RAM eviction, M6 STT (whisper.cpp sidecar). Design decisions live
+> in `./plan/PLAN.md`; per-milestone plans in `./plan/PLAN-M3-M4.md`, `./plan/PLAN-idle-unload.md`, `./plan/PLAN-STT.md`.
 
 ## Dev
 
 ```sh
 uv sync                                # deps without the engine (tests use a fake model)
-uv run pytest                          # 70 tests
+uv run pytest                          # 119 tests
 uv sync --extra engine                 # + pocket-tts (CPU-only torch on Linux, see pyproject)
 uv run pocket-tts-openai               # serve on :8000
 ```
@@ -71,7 +72,7 @@ model `small`, ggml-small.bin ~466 MB multilingual, overridable via
 sidecar cannot start, **400** on validation errors, **413** over the upload
 limit.
 
-### Idle RAM reclamation
+### Voice catalog & cloning (`/v1/voices`)
 
 **`GET /v1/voices`** — list every valid voice:
 
@@ -237,10 +238,13 @@ src/pocket_tts_openai/
   voices.py         aliases, catalog, resolve_voice, language tags
   routes_speech.py  /v1/audio/speech, /v1/models, /health
   routes_voices.py  GET/POST/DELETE /v1/voices
-  server.py         create_app, API-key middleware, background model load + warmup
+  routes_stt.py     POST /v1/audio/transcriptions + /v1/audio/translations
+  stt.py            WhisperSidecar: spawn/health check, idle eviction, crash watch, GGUF download, /inference proxy
+  server.py         create_app, API-key middleware, background model load + warmup, TTS + STT watchdog
   errors.py         OpenAI-shaped error helpers
-tests/              contract + engine + registry + voices + streaming (fake model)
-deploy/Dockerfile   multi-stage CPU-only image (uv, python:3.14-slim, non-root)
+tests/              contract + engine + voices + streaming + idle-unload + STT
+                    (fake model; STT uses a stubbed sidecar — no network)
+deploy/Dockerfile   multi-stage CPU-only image (python:3.14-slim, non-root, whisper.cpp stage)
 docker-compose.yml  local build/run convenience
 .github/workflows/  docker-publish.yml -> GHCR (tests gate, buildx, attestations)
 .dockerignore       keep .venv/.git out of the build context
