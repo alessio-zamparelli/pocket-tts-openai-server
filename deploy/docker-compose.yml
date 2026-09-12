@@ -1,0 +1,100 @@
+# Local development / self-host convenience wrapper around deploy/Dockerfile.
+# Not needed for GitHub Actions (GHCR publishes from the workflow directly).
+# Usage: docker compose -f deploy/docker-compose.yml up -d --build
+#        (then POST to http://localhost:8080)
+name: pocket-tts-openai
+
+services:
+  tts:
+    # Relative to this file's directory (deploy/), so the repo root is "..".
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: pocket-tts-openai:local
+    ports:
+      - "8080:8000"
+    environment:
+      # ------------------------------------------------------------------
+      # All environment variables, commented out and explained. The image
+      # sets sane defaults (see README "Configuration (env)" for the full
+      # table); uncomment only what you need to override.
+      # ------------------------------------------------------------------
+
+      # --- Core server ---------------------------------------------------
+      # Bind host inside the container. The image defaults to 0.0.0.0 so
+      # the port mapping above works without setting this.
+      - STTS_HOST=0.0.0.0
+      # Port the app listens on inside the container (mapped to host:8080).
+      - STTS_PORT=8000
+      # Model language: english | italian | french | german | spanish | ...
+      # - STTS_LANGUAGE=english
+      # Default voice used when the API request omits `voice`.
+      # - STTS_DEFAULT_VOICE=alloy
+      # Remap OpenAI aliases to other voices, CSV of `alias=voice` pairs.
+      # - STTS_VOICE_MAP=alloy=alba,coral=giovanni
+      # If set, `/v1/*` requires `Authorization: Bearer <key>`.
+      # - STTS_API_KEY=changeme
+      # Comma-separated voices to pre-encode at boot (faster first request).
+      # - STTS_WARMUP_VOICES=alba,charles
+
+      # --- Voice cache / uploads -----------------------------------------
+      # Quantize model weights to reduce RSS at a small quality cost.
+      # - STTS_QUANTIZE=false
+      # LRU voice-state cache size (cached voices, cloned voices).
+      # - STTS_MAX_CACHED_VOICES=32
+      # Base directory for cloned voices / STT models. Defaults to
+      # ~/.cache/pocket_tts; the image sets it to the /data volume.
+      # - STTS_CACHE_DIR=/data/cache
+      # Max multipart upload size (cloned voices + STT audio) in MB -> 413.
+      # - STTS_MAX_UPLOAD_MB=25
+
+      # --- TTS idle RAM eviction -----------------------------------------
+      # Drop the TTS model from RAM after this many seconds with no API
+      # requests (saves ~60% of RSS); 0 disables. Next request reloads.
+      # - STTS_IDLE_UNLOAD_S=300
+      # Idle-eviction watchdog poll interval (seconds). Only used when
+      # STTS_IDLE_UNLOAD_S > 0.
+      # - STTS_IDLE_POLL_S=30
+
+      # --- STT: whisper.cpp sidecar (off by default) ---------------------
+      # Master switch: set true to expose POST /v1/audio/transcriptions
+      # and /v1/audio/translations via the whisper-server sidecar.
+      # - STTS_STT_ENABLED=true
+      # GGUF model: small (default, multilingual) | base | large-v3-turbo |
+      # quantized variants by full filename, e.g. small.q5_0.
+      # - STTS_STT_MODEL=small
+      # HF repo hosting the ggml-*.bin model files.
+      # - STTS_STT_MODEL_REPO=ggerganov/whisper.cpp
+      # Where the GGUF is stored (first run downloads it). Persistent under
+      # the /data volume so it survives restarts.
+      # - STTS_STT_MODEL_DIR=/data/cache/stt-models
+      # Sidecar binary path. The image installs `whisper-server` on PATH.
+      # - STTS_STT_BIN=whisper-server
+      # Internal loopback bind for the sidecar (never exposed publicly).
+      # - STTS_STT_HOST=127.0.0.1
+      # Internal HTTP port the app proxies to whisper-server.
+      # - STTS_STT_PORT=8787
+      # whisper -t compute threads for the sidecar.
+      # - STTS_STT_THREADS=4
+      # Force transcription language; empty = auto-detect.
+      # - STTS_STT_LANGUAGE=
+      # Kill the sidecar after this many seconds with no STT request
+      # (reclaims ~100% of its RSS); 0 disables. TTS traffic does not reset it.
+      # - STTS_STT_IDLE_UNLOAD_S=300
+      # Dedicated STT watchdog poll interval (seconds). Only used when
+      # STTS_STT_IDLE_UNLOAD_S > 0.
+      # - STTS_STT_IDLE_POLL_S=30
+
+    volumes:
+      # Persistent model weights + voice registry + STT GGUFs across restarts.
+      - tts-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).read()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 120s
+      retries: 3
+
+volumes:
+  tts-data:

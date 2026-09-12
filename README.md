@@ -164,7 +164,7 @@ docker run --rm -p 8080:8000 \
 #    POST http://localhost:8080/v1/audio/speech
 ```
 
-Or `docker compose up -d --build` (see `docker-compose.yml`).
+Or `docker compose -f deploy/docker-compose.yml up -d --build` (see `deploy/docker-compose.yml`).
 
 - **Runtime user**: non-root (`tts`, uid 10001), exposes `8000`.
 - **Persistent volume** `/data`: model weights (`HF_HOME=/data/hf`) +
@@ -244,8 +244,8 @@ src/pocket_tts_openai/
   errors.py         OpenAI-shaped error helpers
 tests/              contract + engine + voices + streaming + idle-unload + STT
                     (fake model; STT uses a stubbed sidecar — no network)
-deploy/Dockerfile   multi-stage CPU-only image (python:3.14-slim, non-root, whisper.cpp stage)
-docker-compose.yml  local build/run convenience
+deploy/Dockerfile      multi-stage CPU-only image (python:3.14-slim, non-root, whisper.cpp stage)
+deploy/docker-compose.yml  commented env reference + local build/run convenience
 .github/workflows/  docker-publish.yml -> GHCR (tests gate, buildx, attestations)
 .dockerignore       keep .venv/.git out of the build context
 ```
