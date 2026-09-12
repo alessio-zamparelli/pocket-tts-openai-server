@@ -1,0 +1,31 @@
+# Dependabot: keep GitHub Actions and Python dependencies up to date.
+# See https://docs.github.com/code-security/dependabot/dependabot-version-updates
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    # `@vN` action refs (immutable commit-SHA pinning is a separate hardening
+    # step) — Dependabot opens PRs for new majors/minors automatically.
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "ci"
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: "pip"
+    directory: "/"
+    # Tracked against pyproject.toml + uv.lock (uv-managed, CPU-only torch via
+    # the pytorch-cpu index). Dependabot will propose dependency updates; the
+    # engine extra is intentionally excluded from CI (CPU-slim build).
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "python"
+    # Guard rails: never let Dependabot touch major index/source config.
+    ignore:
+      - dependency-name: "torch"
+    cooldown:
+      default-days: 7
