@@ -216,7 +216,14 @@ async def _read_upload(file: UploadFile, limit: int) -> bytes:
 
 
 def _render_upstream(resp, response_format: str) -> Response:
-    """Shape whisper-server's /inference response into the OpenAI format."""
+    """Shape whisper-server's /inference response into the OpenAI format.
+
+    whisper-server has a quirk: it reports decoding/processing failures as HTTP
+    200 with a JSON body of the form {"error": ...} instead of a 4xx/5xx. If we
+    only keyed off the status code we would silently turn such failures into an
+    empty (but plausible-looking) transcript for the json format below, so we
+    surface any "error" key in a 200 body explicitly.
+    """
     if resp.status_code >= 500:
         logger.error("whisper-server upstream error: %s", resp.text[:500])
         raise bad_gateway("The STT backend returned an internal error; retry shortly.")
@@ -227,19 +234,23 @@ def _render_upstream(resp, response_format: str) -> Response:
             detail = resp.text
         raise invalid_request(f"STT backend rejected the request: {detail}")
 
+    # whisper-server serializes failures as {"error": ...} with HTTP 200.
+    try:
+        body = resp.json()
+    except Exception:
+        body = None
+    if isinstance(body, dict) and body.get("error"):
+        raise invalid_request(f"STT backend could not process the audio: {body['error']}")
+
     if response_format == "json":
         # whisper's bare default returns {"text": ...}; fall back to a text wrap
         # if the upstream body is not JSON (defensive).
-        try:
-            body = resp.json()
-        except Exception:
+        if not isinstance(body, dict):
             body = {"text": resp.text.strip()}
         return JSONResponse(content={"text": body.get("text", "")})
 
     if response_format == "verbose_json":
-        try:
-            body = resp.json()
-        except Exception:  # pragma: no cover - should be JSON from upstream
+        if not isinstance(body, dict):
             body = {"text": resp.text.strip(), "segments": []}
         return JSONResponse(content=body)
 

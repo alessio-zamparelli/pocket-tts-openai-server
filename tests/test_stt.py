@@ -363,6 +363,44 @@ def test_transcribe_upstream_error_502(stt_app, engine):
     assert "backend" in error["message"]
 
 
+def test_transcribe_upstream_200_with_error_body_is_surfaced(stt_app, engine):
+    """whisper-server reports decode/processing failures as HTTP 200 with a
+    JSON body of the form {"error": ...}; these must surface as a client 400
+    instead of being silently flattened into an empty transcript."""
+    captured, procs = [], []
+    cfg = Config(stt_enabled=True, stt_idle_unload_s=0)
+    clock = FakeClock(1000.0)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "ok"})
+        return httpx.Response(200, json={"error": "failed to read WAV file"})
+
+    http = httpx.Client(
+        transport=httpx.MockTransport(handler),
+        base_url=f"http://{cfg.stt_host}:{cfg.stt_port}",
+    )
+    sidecar = WhisperSidecar(
+        config=cfg, model_path="ggml-small.bin", http=http,
+        spawn=lambda: FakePopen(1000), now=clock, startup_poll=0.0,
+    )
+    app = create_app(cfg, engine, stt_sidecar=sidecar)
+    with TestClient(app) as c:
+        for fmt in ("json", "verbose_json"):
+            payload = {"model": "whisper-1"}
+            if fmt == "verbose_json":
+                payload["response_format"] = fmt
+            resp = c.post(
+                "/v1/audio/transcriptions",
+                data=payload,
+                files={"file": ("speech.wav", AUDIO, "audio/wav")},
+            )
+            assert resp.status_code == 400, fmt
+            error = resp.json()["error"]
+            assert "could not process" in error["message"]
+            assert "failed to read WAV file" in error["message"]
+
+
 # -- /v1/models + /health ------------------------------------------------------
 
 

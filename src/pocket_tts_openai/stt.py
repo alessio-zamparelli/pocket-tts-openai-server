@@ -209,6 +209,12 @@ class WhisperSidecar:
             "--port", str(self.config.stt_port),
             "-m", str(self.model_path),
             "-t", str(self.config.stt_threads),
+            # whisper.cpp's wav reader hard-requires 16 kHz / 16-bit uploads;
+            # --convert shells out to ffmpeg (already installed in the image) to
+            # resample/transcode any upload (24 kHz TTS output, mp3, m4a, ...)
+            # to the 16 kHz mono PCM whisper wants. Without it every non-16 kHz
+            # upload fails with "failed to read WAV file".
+            "--convert",
         ]
         if self.config.stt_language:
             cmd += ["-l", self.config.stt_language]
