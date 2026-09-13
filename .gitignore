@@ -22,3 +22,6 @@ artifacts/
 
 # Raw corpus dropped into the workspace for voice cloning (480 licensed recordings)
 audio files/
+
+# Generated Italian demo samples (regenerable via artifacts/gen_examples_it.py)
+example_it/
