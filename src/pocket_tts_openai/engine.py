@@ -39,6 +39,23 @@ logger = logging.getLogger(__name__)
 PCM_DTYPE = np.dtype("<i2")
 
 
+def _rss_mb() -> int | None:
+    """Resident set size in MB, best-effort (``None`` off-Linux/unavailable).
+
+    Reads ``VmRSS`` from ``/proc/self/status`` — the same figure the idle-unload
+    plan (PLAN-idle-unload.md) uses to reason about RAM reclamation, surfaced in
+    load/unload lifecycle logs.
+    """
+    try:
+        with open("/proc/self/status", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError):  # pragma: no cover - non-Linux / parse quirks
+        return None
+    return None
+
+
 class RateLimited(Exception):
     """Load-shedding signal: the generation queue is full (``max_waiting``) or a
     request waited past ``queue_timeout_s`` for the generation lock. Routes map
@@ -181,6 +198,10 @@ class TTSEngine:
         self._model = model
         self._loader = loader
         self._config = config
+        # True when the model was built by this server's own background loader
+        # (``load_engine``); injected engines (tests, preloaded) leave it False,
+        # so server shutdown releases only engines it owns.
+        self._auto_loaded = False
         self.registry = registry
         # Serialization hook for cloning. Defaults (lazily) to pocket-tts'
         # module-level export_model_state; tests inject a no-op/fake.
@@ -244,11 +265,41 @@ class TTSEngine:
                 self._model = model
                 self.sample_rate = model.sample_rate
                 self.stats.reloads += 1
-                logger.info("model reloaded in %.2fs", time.perf_counter() - t0)
+                logger.info(
+                    "model reloaded in %.2fs (RSS %s MB)", time.perf_counter() - t0, _rss_mb()
+                )
             finally:
                 self._reload_in_flight = False
         self.warmup()  # re-encode configured warmup voices after a rebuild
         return model
+
+    def unload(self, reason: str = "idle") -> bool:
+        """Drop the resident model + voice-state LRU; log and free heap.
+
+        The single unload primitive backing both idle eviction and server
+        shutdown, so every model release produces one uniform log line carrying
+        the reason, the RSS before/after and the RAM reclaimed. Idempotent: a
+        second call while already unloaded is a no-op. The caller is responsible
+        for holding ``_gen_lock`` when it must not race an in-flight generation
+        (see :meth:`maybe_unload`).
+        """
+        if not self.loaded:
+            return False
+        before = _rss_mb()
+        self._model = None
+        self.stats.unloads += 1
+        self._voice_states.clear()
+        gc.collect()
+        try:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except Exception:  # pragma: no cover - non-glibc
+            logger.debug("malloc_trim unavailable; skipping heap release")
+        after = _rss_mb()
+        released = f" (released {before - after} MB)" if before and after else ""
+        logger.info(
+            "model unloaded: reason=%r RSS %s->%s MB%s", reason, before, after, released
+        )
+        return True
 
     def maybe_unload(self, now: float | None = None) -> bool:
         """Evict the resident model if idle past ``idle_unload_s``.
@@ -270,16 +321,7 @@ class TTSEngine:
         try:
             # Re-check under the lock; a request may have landed since we looked.
             if now - self._last_activity >= self._config.idle_unload_s and self._model is not None:
-                self._model = None
-                self.stats.unloads += 1
-                self._voice_states.clear()
-                gc.collect()
-                try:
-                    ctypes.CDLL("libc.so.6").malloc_trim(0)
-                except Exception:  # pragma: no cover - non-glibc
-                    pass
-                logger.info("idle %.0fs: evicted model to free RAM", self._config.idle_unload_s)
-                return True
+                return self.unload(reason=f"idle {self._config.idle_unload_s}s")
             return False
         finally:
             self._gen_lock.release()
@@ -558,7 +600,18 @@ def load_engine(config: Config) -> TTSEngine:
         logger.info("loading pocket-tts model (language=%s)…", config.language)
         return cast("TTSModelLike", TTSModel.load_model(**kwargs))
 
+    t0 = time.perf_counter()
     model = build()
+    logger.info(
+        "model loaded: language=%s quantize=%s sample_rate=%d in %.2fs (RSS %s MB)",
+        config.language,
+        config.quantize,
+        model.sample_rate,
+        time.perf_counter() - t0,
+        _rss_mb(),
+    )
     registry = VoiceRegistry.from_config_dir(Path(config.cache_dir) if config.cache_dir else None)
     registry.load()
-    return TTSEngine(model, config=config, registry=registry, loader=build)
+    model = TTSEngine(model, config=config, registry=registry, loader=build)
+    model._auto_loaded = True  # owned by this server: shutdown will unload it
+    return model

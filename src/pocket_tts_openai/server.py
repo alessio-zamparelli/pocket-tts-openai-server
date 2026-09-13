@@ -53,6 +53,21 @@ def create_app(config: Config | None = None, engine: TTSEngine | None = None) ->
             stop = getattr(app.state, "_idle_stop", None)
             if stop is not None:
                 stop.set()
+            # Load/unload symmetry: release the resident model at shutdown so the
+            # lifecycle is fully observable in logs (plan: load/unload logging).
+            # Only engines this server built itself (``_auto_loaded``) are
+            # released — injected engines may be reused (tests) or owned by a
+            # supervisor, so they are left resident but still logged.
+            engine_obj = getattr(app.state, "engine", None)
+            if engine_obj is not None:
+                if getattr(engine_obj, "_auto_loaded", False):
+                    logger.info("shutting down: unloading model…")
+                    try:
+                        engine_obj.unload(reason="server shutdown")
+                    except Exception:  # pragma: no cover - defensive shutdown path
+                        logger.exception("error unloading model during shutdown")
+                else:
+                    logger.info("shutting down: engine left resident (not owned by this server)")
 
     app = FastAPI(title="pocket-tts-openai", version="0.1.0", lifespan=lifespan)
     app.state.config = config

@@ -41,6 +41,7 @@ packages = ["src/pocket_tts_openai"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = ["e2e: end-to-end tests against the real pocket-tts model (run with POCKET_TTS_E2E=1)"]
 
 [tool.pyright]
 venvPath = "."
