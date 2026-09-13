@@ -69,12 +69,12 @@ COPY --from=builder /app/.venv /app/.venv
 RUN useradd --create-home --uid 10001 tts \
     && mkdir -p /data/cache/voices /data/hf
 
-# Seed the voice registry with the pre-cloned Italian voice `mtc` (see the
-# repo `voices/` dir). Docker copies this into the named volume on first
-# mount, so a fresh container already lists `mtc` in GET /v1/voices with no
-# runtime clone.
+# Seed the voice registry with the pre-cloned Italian voice `jarvis1` (see
+# the repo `voices/` dir). Docker copies this into the named volume on first
+# mount, so a fresh container already lists `jarvis1` in GET /v1/voices with
+# no runtime clone.
 COPY voices/registry.json /data/cache/voices/registry.json
-COPY voices/mtc.safetensors /data/cache/voices/mtc.safetensors
+COPY voices/jarvis1.safetensors /data/cache/voices/jarvis1.safetensors
 
 RUN chown -R tts:tts /data
 
