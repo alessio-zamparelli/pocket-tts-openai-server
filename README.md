@@ -94,14 +94,38 @@ from the HF cache) instead of returning 503. Set `POCKET_TTS_IDLE_UNLOAD_S=0`
 to keep the model resident always. `/health` exposes `loaded`, `unloads`,
 `reloads` and `last_request_age_s`.
 
+### Model size & RAM
+
+pocket-tts ships **no whisper-style model family** — there is no smaller
+`tiny`/`nano` to pick. Each language has a single **base model** (6-layer,
+~430 MB download), and that's already the smallest available. Some languages
+also offer a `_24l` **quality-upgrade** variant (24-layer, larger + slower):
+`english_2026-04_24l`, `french_24l`, `german_24l`, `spanish_24l`. The model
+tier is chosen by `POCKET_TTS_LANGUAGE`; there is no size knob below "base".
+
+The sharpest RAM lever is `POCKET_TTS_QUANTIZE=1`, which loads the
+transformer's attention/FFN weights as **int8** (dynamic quantization,
+FBGEMM on x86; requires AVX2) instead of fp32. Measured at rest with the
+model resident (`/health` → `loaded:true`):
+
+| `POCKET_TTS_QUANTIZE` | resident RSS |
+| --- | --- |
+| `false` (default) | ~1,042 MB |
+| `1` | ~395 MB (≈ 62% less) |
+
+Quantization also speeds up inference ~27% on x86 with no measurable quality
+change (WER unchanged). For even lower counts, `pip install
+pocket-tts[quantize]` swaps in the `torchao` backend. Paired with idle
+eviction (previous section) an idle process holds ~0 MB of model.
+
 ## Configuration (env)
 
 | var | default | notes |
 | --- | --- | --- |
 | `POCKET_TTS_HOST` | `127.0.0.1` | bind host |
 | `POCKET_TTS_PORT` | `8000` | bind port |
-| `POCKET_TTS_LANGUAGE` | `english` | model language |
-| `POCKET_TTS_QUANTIZE` | `false` | quantize the model |
+| `POCKET_TTS_LANGUAGE` | `english` | model language — base 6-layer model; `*_24l` variants are larger quality upgrades |
+| `POCKET_TTS_QUANTIZE` | `false` | int8 weights: ~62% less resident RAM + ~27% faster on x86 (FBGEMM, needs AVX2) |
 | `POCKET_TTS_MAX_CACHED_VOICES` | `32` | LRU voice-state cache size |
 | `POCKET_TTS_WARMUP_VOICES` | — | comma-separated voices to pre-encode at boot |
 | `POCKET_TTS_IDLE_UNLOAD_S` | `300` | evict the model from RAM after this many idle seconds; `0` disables |
