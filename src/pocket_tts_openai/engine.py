@@ -72,12 +72,25 @@ class AudioBuffer(Protocol):
 
 
 def to_pcm16(audio: "AudioBuffer | np.ndarray") -> bytes:
-    """Convert a 1-D audio buffer (torch tensor or ndarray, [-1..1] float) to s16le bytes."""
+    """Convert a 1-D audio buffer (torch tensor or ndarray, [-1..1] float) to s16le bytes.
+
+    Allocates a single f32 working buffer when the input is already float32:
+    ``asarray`` is a view, and the clip + scale write in place (``out=arr``), so
+    only the int16 ``astype`` and the ``tobytes`` copy allocate fresh memory (M4's
+    streaming loop calls this once per chunk — every saved allocation multiplies
+    across a long stream).
+
+    Contract: the input buffer may be **mutated in place** (when it's a writable
+    float32 view). Callers must not reuse ``audio`` after conversion — true at
+    every call site (each chunk/tensor from :meth:`TTSEngine.generate_pcm` /
+    ``generate_audio_stream`` is consumed once).
+    """
     if not isinstance(audio, np.ndarray):
         audio = audio.detach().cpu()
     arr = np.asarray(audio, dtype=np.float32).reshape(-1)
-    arr = np.clip(arr, -1.0, 1.0)
-    return (arr * 32767.0).astype(PCM_DTYPE).tobytes()
+    np.clip(arr, -1.0, 1.0, out=arr)
+    np.multiply(arr, 32767.0, out=arr)
+    return arr.astype(PCM_DTYPE).tobytes()
 
 
 def pcm_to_wav(pcm: bytes, sample_rate: int) -> bytes:
@@ -424,9 +437,11 @@ class TTSEngine:
         """Encode an audio prompt, persist it as ``<registry>/<name>.safetensors``,
         cache it live, and return the resolved cache key.
 
-        Must run under the generation lock (encoding touches the stateful
-        batch=1 model) -- the caller (POST /v1/voices) acquires it via the
-        shared ``generate`` path below.
+        Only the encode is serialized with generation (``get_state_for_audio_prompt``
+        touches the stateful batch=1 model). The ``.safetensors`` export + atomic
+        rename are pure I/O on the returned ``ModelState`` *snapshot* and run
+        outside the generation lock, so a slow disk write during a clone never
+        stalls in-flight synthesis requests.
         """
         registry = self.registry
         if registry is None:
@@ -438,15 +453,17 @@ class TTSEngine:
         # Serialize with generation: encoding touches the stateful batch=1 model.
         with self._gen_lock:
             state = model.get_state_for_audio_prompt(str(audio_path))
-            # Export to a temp name then atomically move into place so a crash
-            # mid-export can't leave a truncated/corrupt .safetensors. Stale
-            # temps are swept on the next registry load.
-            tmp = registry.directory / f".{name}.{uuid4().hex}.safetensors.tmp"
-            try:
-                self._exporter()(state, tmp)
-                tmp.replace(dest)
-            finally:
-                tmp.unlink(missing_ok=True)
+        # Export to a temp name then atomically move into place so a crash
+        # mid-export can't leave a truncated/corrupt .safetensors. Stale temps
+        # are swept on the next registry load. `state` is a strong local ref, so
+        # a concurrent idle unload() during this I/O is harmless (the export
+        # serializes the in-memory snapshot, not the live model).
+        tmp = registry.directory / f".{name}.{uuid4().hex}.safetensors.tmp"
+        try:
+            self._exporter()(state, tmp)
+            tmp.replace(dest)
+        finally:
+            tmp.unlink(missing_ok=True)
         logger.info(
             "cloned voice %r -> %s in %.2fs", name, dest, time.perf_counter() - t0
         )

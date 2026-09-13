@@ -1,18 +1,20 @@
 # pocket-tts-openai
 
-OpenAI-compatible TTS server (`POST /v1/audio/speech`, `stream` chunked PCM/WAV)
-powered by [Kyutai's pocket-tts](https://github.com/kyutai-labs/pocket-tts) —
-100M-param speech synthesis on CPU.
+OpenAI-compatible TTS server (`POST /v1/audio/speech`, `stream` chunked PCM/WAV
+or live ffmpeg-encoded mp3/opus/aac/flac) powered by
+[Kyutai's pocket-tts](https://github.com/kyutai-labs/pocket-tts) — 100M-param
+speech synthesis on CPU.
 
 > Work in progress — see `./PLAN.md`. **M1** (server skeleton), **M2**
-> (audio formats), **M3** (voice catalog + cloning `GET/POST/DELETE /v1/voices`)
-> and **M4** (streamed `wav`/`pcm`) are implemented.
+> (audio formats), **M3** (voice catalog + cloning `GET/POST/DELETE /v1/voices`),
+> **M4** (streamed output incl. live ffmpeg encoding for compressed formats) and
+> **M5.5** (idle RAM eviction) are implemented.
 
 ## Dev
 
 ```sh
 uv sync                                # deps without the engine (tests use a fake model)
-uv run pytest                          # 70 tests
+uv run pytest                          # 127 tests
 uv sync --extra engine                 # + pocket-tts (CPU-only torch on Linux, see pyproject)
 uv run pocket-tts-openai               # serve on :8000
 ```
@@ -32,27 +34,35 @@ Body (JSON):
 | `input` | string | — | text to synthesize (required, non-empty) |
 | `voice` | string | `alloy` | OpenAI alias, Kyutai catalog voice, custom voice, `https://`/`hf://`/path |
 | `response_format` | string | `wav` | `wav` \| `pcm` \| `mp3` \| `opus` \| `aac` \| `flac` (compressed need ffmpeg; see below) |
-| `stream` | bool | `false` | **private extension** — chunked transfer for `wav`/`pcm`. Ignored (buffered) for compressed formats |
+| `stream` | bool | `false` | **private extension** — chunked transfer for `wav`/`pcm`; compressed formats are encoded through ffmpeg live (no whole-file buffering) |
 | `speed` | float | — | accepted, ignored |
 | `instructions` | string | — | accepted, ignored |
 | `language` | string | — | server-configured language always wins; logged and ignored |
 
-`stream: true` returns a `StreamingResponse`:
+`stream: true` returns a `StreamingResponse` for every format:
 
 - `response_format=pcm` → `audio/pcm`, raw mono s16le chunks.
 - `response_format=wav` → `audio/wav` with a **streaming WAV header**
   (`RIFF`/`data` sizes = `0xFFFFFFFF`) followed by PCM chunks — renders
   incrementally in ffplay/VLC and most browsers.
+- `response_format=mp3|aac|flac` → the compressed format, but encoded **live**:
+  PCM chunks are piped into an ffmpeg subprocess as they are generated
+  (`encode_pcm_stream`) and the encoded bytes flow incrementally, so the first
+  audio arrives before synthesis finishes — with byte-identical output to the
+  buffered (non-streaming) response.
+- `response_format=opus` → also streamed live, but in **Ogg pages** (~a page
+  per second at 96 kbps), so the chunk granularity is coarser than the other
+  formats — inherent to the Ogg/Opus muxing.
 
-`Content-Disposition` is `attachment; filename=speech.wav` (or `.pcm`).
+`Content-Disposition` is `attachment; filename=speech.{format}`.
 
 Compressed formats (`mp3`/`opus`/`aac`/`flac`) are encoded through **ffmpeg**
-(`audio_codecs.py`) and returned as a single whole-file response with the
-OpenAI content types (`audio/mpeg`, `audio/ogg`, `audio/aac`, `audio/x-flac`).
-`stream: true` is ignored for them (ffmpeg needs the complete PCM before it
-can encode). Without `ffmpeg` on PATH they return a clear 400; **the Docker
-image ships ffmpeg**, so they just work there — locally run
-`apt-get install ffmpeg` (or your package manager).
+(`audio_codecs.py`) with the OpenAI content types (`audio/mpeg`, `audio/ogg`,
+`audio/aac`, `audio/x-flac`). `stream: false` (the default) buffers the whole
+file in memory first; `stream: true` encodes live as described above. Without
+`ffmpeg` on PATH they return a clear 400; **the Docker image ships ffmpeg**, so
+they just work there — locally run `apt-get install ffmpeg` (or your package
+manager).
 
 ### `GET /v1/models` · `GET /health`
 
@@ -84,8 +94,10 @@ Catalog + voice cloning.
 - `language` (optional): free-form tag, stored and echoed.
 
 Returns **201** with the custom-voice payload after the audio prompt is encoded
-and exported to `<cache_dir>/voices/<name>.safetensors`. The encode runs under
-the global generation lock — a clone blocks concurrent synthesis requests.
+and exported to `<cache_dir>/voices/<name>.safetensors`. The audio-prompt
+*encode* runs under the global generation lock; the `.safetensors` export runs
+outside it, so a slow disk delays only the clone, never a concurrent synthesis
+request.
 
 **`DELETE /v1/voices/{name}`** — **405** for built-in voices; **404** for
 unknown; **204** on success (removes the registry entry, the `.safetensors`

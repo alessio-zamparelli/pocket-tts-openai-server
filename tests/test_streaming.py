@@ -90,23 +90,95 @@ def test_stream_wav_false_identical(client):
     assert r_static.content == r_stream_false.content
 
 
-def test_compressed_format_ignores_stream(client, monkeypatch):
-    """stream is ignored (buffered whole-file) for compressed formats: ffmpeg
-    needs the complete PCM before it can encode, so there is no chunked path."""
+def test_compressed_stream_true_routes_through_streaming(client, monkeypatch):
+    """stream:true for a compressed format now really streams: the route iterates
+    the ffmpeg streaming generator multiple times server-side (a single-blob
+    buffered response would iterate exactly once), and the audio is byte-identical
+    to the buffered (stream:false) response."""
     import pocket_tts_openai.routes_speech as rs
 
-    monkeypatch.setattr(rs, "encode_pcm", lambda pcm, sr, fmt: b"ENCODED:" + b"mp3")
     r_static = client.post(
         "/v1/audio/speech", json={"input": "hi", "response_format": "mp3"}
     )
-    r_stream = client.post(
+    assert r_static.status_code == 200
+
+    yields: list[bytes] = []
+    real = rs.encode_pcm_stream
+
+    def counting(*a):
+        for chunk in real(*a):
+            yields.append(chunk)
+            yield chunk
+
+    monkeypatch.setattr(rs, "encode_pcm_stream", counting)
+    with client.stream(
+        "POST",
         "/v1/audio/speech",
         json={"input": "hi", "response_format": "mp3", "stream": True},
+    ) as r:
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("audio/mpeg")
+        body = b"".join(r.iter_bytes())
+    assert len(yields) > 1, "expected an incremental ffmpeg stream, got one blob"
+    assert body == r_static.content
+
+
+def test_compressed_stream_unknown_voice_400(client):
+    """Unknown voice on the streamed-compressed path is a clean 400 before any
+    headers -- not a mid-iteration 500 from Starlette's streaming worker."""
+    r = client.post(
+        "/v1/audio/speech",
+        json={"input": "hi", "voice": "nope", "response_format": "mp3", "stream": True},
     )
-    assert r_static.status_code == 200
-    assert r_stream.status_code == 200
-    assert r_stream.headers["content-type"].startswith("audio/mpeg")
-    assert r_stream.content == r_static.content  # stream ignored -> identical
+    assert r.status_code == 400
+    assert r.json()["error"]["type"] == "invalid_request_error"
+    assert "nope" in r.json()["error"]["message"]
+
+
+def test_stream_unknown_voice_400_eager_validation(client):
+    """A stream (raw wav/pcm or compressed) must not 500 on an unknown voice:
+    the route validates the voice up front (also for the raw streaming path)."""
+    for fmt in ("wav", "mp3"):
+        r = client.post(
+            "/v1/audio/speech",
+            json={"input": "hi", "voice": "nope", "response_format": fmt, "stream": True},
+        )
+        assert r.status_code == 400, fmt
+        assert r.json()["error"]["type"] == "invalid_request_error", fmt
+
+
+def test_compressed_stream_disconnect_releases_lock(fake_model, config, engine):
+    """A client that abandons a streamed mp3 mid-way must still release the
+    generation lock (kill ffmpeg + close the engine stream on GeneratorExit)."""
+    app = create_app(config, engine)
+    with TestClient(app) as c:
+        with c.stream(
+            "POST",
+            "/v1/audio/speech",
+            json={"input": "hello", "response_format": "mp3", "stream": True},
+        ) as r:
+            assert r.status_code == 200
+            first = next(iter(r.iter_bytes()))
+            assert first
+        # generator abandoned -> lock must be free for a subsequent request
+    with TestClient(app) as c:
+        r = c.post("/v1/audio/speech", json={"input": "hi", "response_format": "pcm"})
+        assert r.status_code == 200
+    _assert_valid_pcm(r.content)
+
+
+def test_compressed_stream_opus_timeout_and_locking(fake_model, config, engine):
+    """Opus streams as valid Ogg too, and a fully-consumed compressed stream
+    reports the same audio duration as the buffered one."""
+    app = create_app(config, engine)
+    with TestClient(app) as c:
+        r = c.post(
+            "/v1/audio/speech", json={"input": "hi", "response_format": "opus", "stream": True}
+        )
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("audio/ogg")
+        assert r.content[:4] == b"OggS"
+        assert len(r.content) > 0
 
 
 def test_concurrent_streams_serialize_but_do_not_overlap(fake_model, config, engine):

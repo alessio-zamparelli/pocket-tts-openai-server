@@ -9,7 +9,7 @@ from fastapi import Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from .audio_codecs import MEDIA_TYPES, encode_pcm
+from .audio_codecs import MEDIA_TYPES, encode_pcm, encode_pcm_stream
 from .config import Config
 from .engine import RateLimited, TTSEngine, pcm_to_wav, streaming_wav_header
 from .errors import OpenAIError, invalid_request, rate_limited, unavailable
@@ -40,7 +40,9 @@ class SpeechRequest(BaseModel):
         default=None, description="Server-configured language always wins; logged and ignored if different.")
     stream: bool = Field(
         default=False,
-        description="Private extension: chunked transfer for wav/pcm. Ignored (buffered) for compressed formats.")
+        description="Private extension: chunked transfer. wav/pcm yield raw chunks; "
+        "mp3/opus/aac/flac keep their content type and are encoded through ffmpeg live "
+        "(no whole-file buffering).")
 
 
 def _engine_or_503(request: Request) -> TTSEngine:
@@ -85,24 +87,41 @@ def speech(req: SpeechRequest, request: Request) -> Response:
             "a custom voice, an https:// URL or an hf:// reference."
         )
 
-    # streaming path (wav/pcm only -- lossy formats are buffered whole-file)
-    if req.stream and req.response_format in ("wav", "pcm"):
+    # streaming path: wav/pcm yield raw chunks; compressed formats are encoded
+    # live through ffmpeg (encode_pcm_stream) -- no whole-file buffering.
+    if req.stream:
         # Admit-or-429 before headers so overload doesn't kill a stream midway.
         try:
             engine.check_capacity()
         except RateLimited as exc:
             raise rate_limited(str(exc)) from None
-        filename = "speech.pcm" if req.response_format == "pcm" else "speech.wav"
-        media_type = "audio/pcm" if req.response_format == "pcm" else "audio/wav"
-        gen = _stream_speech_pcm if req.response_format == "pcm" else _stream_speech_wav
+        # Validate the voice up front so unknown names produce a clean 400, not a
+        # generator-body error surfacing as a 500 from Starlette's streaming
+        # worker. This also warms the cached model state for the generator body.
         try:
+            engine.voice_state(req.voice)
+        except ValueError:
+            raise _speech_error() from None
+        if req.response_format in ("wav", "pcm"):
+            filename = "speech.pcm" if req.response_format == "pcm" else "speech.wav"
+            media_type = "audio/pcm" if req.response_format == "pcm" else "audio/wav"
+            gen = _stream_speech_pcm if req.response_format == "pcm" else _stream_speech_wav
             return StreamingResponse(
                 gen(engine, req.input, req.voice),
                 media_type=media_type,
                 headers={"Content-Disposition": f"attachment; filename={filename}"},
             )
-        except ValueError:
-            raise _speech_error() from None
+        filename = f"speech.{req.response_format}"
+        media_type = MEDIA_TYPES[req.response_format]
+        return StreamingResponse(
+            encode_pcm_stream(
+                engine.generate_pcm_stream(req.input, req.voice),
+                engine.sample_rate,
+                req.response_format,
+            ),
+            media_type=media_type,
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
 
     try:
         pcm = engine.generate_pcm(req.input, req.voice)

@@ -181,3 +181,29 @@ def test_e2e_streaming_wav_chunked(client):
     assert len(chunks) > 1  # actually streamed, not buffered whole-file
     assert body.startswith(b"RIFF")
     assert len(body) > 44 and (len(body) - 44) % 2 == 0
+
+
+def test_e2e_streaming_aac_chunked(client):
+    """The private stream=true extension also streams compressed formats: aac
+    is encoded through ffmpeg live and arrives chunked with ADTS sync words."""
+    if __import__("shutil").which("ffmpeg") is None:
+        pytest.skip("ffmpeg not installed (needed for the aac streaming path)")
+    with client.stream(
+        "POST",
+        _SPEECH_URL,
+        json={
+            "input": "Streaming compressed output end to end test.",
+            "voice": "alloy",
+            "stream": True,
+            "response_format": "aac",
+        },
+    ) as r:
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("audio/aac")
+        assert r.headers.get("transfer-encoding") == "chunked"
+        chunks = [c for c in r.iter_bytes()]
+        body = b"".join(chunks)
+    assert len(chunks) > 1  # actually streamed, not buffered whole-file
+    assert body[0] == 0xFF and (body[1] & 0xF0) == 0xF0  # ADTS sync word 0xFFF
+    assert len(body) > 100
+

@@ -78,6 +78,60 @@ def test_to_pcm16_converts_float_to_s16le():
     assert pcm == np.array([0, 32767, -32767, 16383], dtype="<i2").tobytes()
 
 
+def _reference_to_pcm16(audio):
+    """The pre-optimization implementation (allocates clip + scale buffers).
+    Kept as the behavioral oracle for the in-place version."""
+    if not isinstance(audio, np.ndarray):
+        audio = audio.detach().cpu()
+    arr = np.asarray(audio, dtype=np.float32).reshape(-1)
+    arr = np.clip(arr, -1.0, 1.0)
+    return (arr * 32767.0).astype("<i2").tobytes()
+
+
+def test_to_pcm16_matches_reference_implementation():
+    """In-place clip/scale must produce byte-identical output to the old code
+    over varied values incl. out-of-range ones that need clamping. The oracle
+    runs on the ORIGINAL values first (to_pcm16 mutates its f32 input in place
+    by design, so it can't be re-read afterwards)."""
+    rng = np.random.default_rng(7)
+    for _ in range(20):
+        arr = (rng.standard_normal(4096) * 1.8).astype(np.float32)  # needs clipping
+        expected = _reference_to_pcm16(arr)
+        assert to_pcm16(arr) == expected
+        # the real speech range (already within [-1, 1]) must also be untouched
+        arr2 = (rng.standard_normal(4096) * 0.3).astype(np.float32)
+        expected2 = _reference_to_pcm16(arr2)
+        assert to_pcm16(arr2) == expected2
+
+
+def test_to_pcm16_dtype_branch_copies_input_not_caller():
+    """Float64/int16 inputs go through the dtype-copy ``asarray`` branch: the
+    caller's array is NOT mutated by the in-place ops (it's copied first)."""
+    src = np.array([0.5, 1.2, -0.9], dtype=np.float64)
+    before = src.copy()
+    pcm = to_pcm16(src)
+    assert (src == before).all()  # caller's float64 buffer untouched
+    assert pcm == _reference_to_pcm16(src)
+
+    src_i = np.array([0, 32767, -32768, 100], dtype=np.int16)
+    pcm_i = to_pcm16(src_i)
+    assert pcm_i == _reference_to_pcm16(src_i)
+
+
+def test_to_pcm16_length_and_endianness():
+    arr = np.zeros(24000, dtype=np.float32)
+    pcm = to_pcm16(arr)
+    assert len(pcm) == 24000 * 2  # s16 = 2 bytes/sample
+    assert pcm == b"\x00\x00" * 24000
+    assert pcm[::2].startswith(b"\x00")  # little-endian: LSB first (zeros, still a smoke check)
+
+
+def test_to_pcm16_torch_tensor_path():
+    torch = pytest.importorskip("torch")
+    t = torch.tensor([0.0, 1.0, -1.0, 2.0], dtype=torch.float32)
+    assert to_pcm16(t) == np.array([0, 32767, -32767, 32767], dtype="<i2").tobytes()
+
+
 def test_to_pcm16_clips_and_accepts_tensor_like():
     class FakeTensor:
         def __init__(self, arr):
@@ -157,6 +211,51 @@ def test_clone_voice_export_failure_leaves_no_dest(engine, registry, fake_model)
     # never a truncated/missing dest, and the temp file is cleaned up
     assert not registry.path_for("mario").exists()
     assert list(registry.directory.glob("*.safetensors.tmp")) == []
+
+
+def test_clone_voice_releases_gen_lock_during_export(engine, registry):
+    """The .safetensors export must NOT hold the generation lock: a concurrent
+    synthesis request can proceed while the exporter is running."""
+    def lockfree_exporter(state: object, path: str | Path) -> None:
+        # Inside the exporter the generation lock must be free to acquire.
+        acquired = engine._gen_lock.acquire(blocking=False)
+        assert acquired, "generation lock still held during safetensors export"
+        if acquired:
+            engine._gen_lock.release()
+        Path(path).write_bytes(b"fake-safetensors")
+
+    engine._export_state = lockfree_exporter  # type: ignore[method-assign]
+    engine.clone_voice("mario", "s.wav")
+    assert registry.path_for("mario").exists()
+
+
+def test_clone_slow_disk_export_does_not_block_generation(engine):
+    """A slow disk write during a clone must not stall in-flight requests: once
+    the encode is done the lock is released, so a generate_pcm that starts while
+    the exporter is still blocked completes before the clone finishes."""
+    import time
+
+    export_started = threading.Event()
+    allow_export = threading.Event()
+
+    def slow_exporter(state: object, path: str | Path) -> None:  # noqa: ARG001
+        export_started.set()
+        assert allow_export.wait(timeout=5.0)
+        Path(path).write_bytes(b"fake-safetensors")
+
+    engine._export_state = slow_exporter  # type: ignore[method-assign]
+    clone_thread = threading.Thread(target=lambda: engine.clone_voice("mario", "s.wav"))
+    clone_thread.start()
+    assert export_started.wait(timeout=5.0)  # encode done; exporter running
+
+    # Must complete immediately, NOT wait for the stuck exporter.
+    t0 = time.perf_counter()
+    engine.generate_pcm("hi", "alloy")
+    assert time.perf_counter() - t0 < 0.3
+
+    allow_export.set()
+    clone_thread.join(timeout=5.0)
+    assert not clone_thread.is_alive()
 
 
 # --- P1.3 load shedding + queue timeout --------------------------------------
