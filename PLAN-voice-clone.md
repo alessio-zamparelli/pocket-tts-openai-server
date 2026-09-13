@@ -171,20 +171,27 @@ voice `mtc` (`cached: True`, `safetensors: true`) → `POST /v1/audio/speech`
 `voice="mtc"` → **200 audio/wav 6.96 s** (RMS 0.116, peak 0.798).
 `SERVER_PROOF_OK`; `/v1/voices` registry lists `mtc`.
 
-**New findings worth carrying forward**
+- **Servable via the API**: the `mtc` clone is persisted in
+  `~/.cache/pocket_tts/voices/` (`registry.json` + `mtc.safetensors`) and is
+  re-loaded at every boot; `artifacts/prove_api.py` ran the real uvicorn server
+  twice and confirmed `GET /v1/voices` lists `mtc` and `POST /v1/audio/speech`
+  voice=`mtc` returns audio both in a fresh process and after a restart
+  (token-free; weights cached) — see the README "Persisted custom voices".
+
+#### New findings worth carrying forward
 
 - **mp3/flac clone uploads need `soundfile` at runtime**: pocket-tts `audio_read`
   decodes 16-bit WAV with the stdlib `wave` module but every other format needs
   `soundfile` (not installed). Our dep-free fix: transcode the reference to 16-bit
   PCM WAV with ffmpeg before `get_state_for_audio_prompt` (done in the script and in
-  the server proof). The advertised `_AUDIO_EXTS = (`.wav`, `.mp3`, `.flac`)` in
-  `routes_voices.py` therefore only *truly* works for WAV today — a future
+  the server proof). The advertised `_AUDIO_EXTS` tuple therefore only *truly*
+  works for WAV today — a future
   server-side transcoder would honor mp3/flac uploads with zero new deps.
 - **Voice-name validator rejects uppercase**: `mTC` → 400 (`[a-z0-9_-]` only); the
   server proof used `mtc`. Keep this in mind if the corpus prefixes are re-used as
   voice ids.
 
-**Security post-conditions**
+#### Security post-conditions
 
 - `.env` / `.env.*` gitignored; `HF_TOKEN` only ever read from the env; scripts print
   no token; logs defensively sed-redacted. `git status` shows no `.env`.

@@ -105,6 +105,29 @@ file, and its LRU cache slot).
 
 Custom voices are immediately usable as `voice` in `/v1/audio/speech`.
 
+**Persisted custom voices.** Cloned voices are stored in `<cache_dir>/voices/`
+(`POCKET_TTS_CACHE_DIR`, default `~/.cache/pocket_tts`) as `<name>.safetensors`
+plus a `registry.json` index, and are re-loaded from disk at every boot — they
+survive restarts without re-cloning. The voice is served by its id like any
+other (a custom voice name is just another valid `voice` value).
+
+Example — serve the previously cloned Italian voice `mtc` (saved from the
+`audio files/` corpus):
+
+```sh
+POCKET_TTS_LANGUAGE=italian_24l uv run python -m pocket_tts_openai.server
+```
+
+```sh
+curl -s localhost:8000/v1/audio/speech -H 'content-type: application/json' \
+  -d '{"model":"tts-1","voice":"mtc","input":"Questa è la voce salvata."}' -o mtc.wav
+```
+
+The cloned voice only makes sense with the matching model language it was encoded
+from (`italian_24l` here). Pre-encode it at boot with `POCKET_TTS_WARMUP_VOICES=mtc`.
+Uploads accepted as `.mp3`/`.flac` need `soundfile` at runtime (not installed);
+the zero-dependency workaround is to upload a 16-bit PCM WAV.
+
 ### Idle RAM reclamation
 
 After `POCKET_TTS_IDLE_UNLOAD_S` (default 300 s = 5 min) with **no API
@@ -222,7 +245,7 @@ git tag v0.1.0 && git push origin main --tags  # triggers the workflow
 
 ## Layout
 
-```
+```text
 src/pocket_tts_openai/
   config.py         Config (env-driven)
   engine.py         TTSEngine: gen lock, voice-state LRU, clone, generate_pcm_stream
