@@ -23,10 +23,12 @@ services:
       # german_24l, spanish_24l) are larger quality upgrades.
       - POCKET_TTS_LANGUAGE=italian
       # OpenAI voice alias used when a request omits "voice".
-      # - POCKET_TTS_DEFAULT_VOICE=alloy
+      - POCKET_TTS_DEFAULT_VOICE=eponine
       # Extra alias->voice mapping, comma-separated: alias1=voice1,alias2=voice2
-      # (merges over the built-in catalog).
-      - POCKET_TTS_VOICE_MAP=eponine
+      # (merges over the built-in catalog). Not a plain voice name: every entry
+      # must be `alias=voice` (a bare value like `VOICE_MAP=eponine` fails at
+      # startup with a clear ValueError).
+      # - POCKET_TTS_VOICE_MAP=
       # Comma-separated voices to pre-encode at startup (warms the model cache).
       - POCKET_TTS_WARMUP_VOICES=eponine
       # int8 weights: ~62% less resident RAM, ~27% faster on x86 (FBGEMM/AVX2),
