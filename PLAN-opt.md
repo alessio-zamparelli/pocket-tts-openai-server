@@ -362,7 +362,7 @@ Landing notes + deviations from the plan above, so the record matches the code:
 
    New tests: `tests/test_audio_codecs.py` (7: byte parity mp3/aac/flac, opus
    decode-parity, first-bytes-before-exhausted, source-error forwarding, abandonment
-   + thread reaping, missing-ffmpeg, unknown format); `tests/test_streaming.py`
+   and thread reaping, missing-ffmpeg, unknown format); `tests/test_streaming.py`
    (routes through the streaming generator multiple times + byte-identical to
    buffered, streamed unknown-voice 400 for wav *and* mp3, disconnect releases lock,
    opus OggS valid); `test_integration.py` gains `test_e2e_streaming_aac_chunked`

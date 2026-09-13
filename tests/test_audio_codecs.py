@@ -8,6 +8,7 @@ installed (the Docker image ships it, so CI runs them for real).
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import threading
 import time
@@ -18,8 +19,10 @@ import pytest
 
 from pocket_tts_openai.audio_codecs import encode_pcm, encode_pcm_stream
 
+# Collection-safe: `shutil.which` returns None instead of raising when ffmpeg is
+# absent (the mock CI env has no ffmpeg), so the whole module skips cleanly.
 ffmpeg_available = pytest.mark.skipif(
-    subprocess.run(["ffmpeg", "-version"], capture_output=True).returncode != 0,
+    shutil.which("ffmpeg") is None,
     reason="ffmpeg not installed",
 )
 
@@ -165,6 +168,11 @@ def test_missing_ffmpeg_raises_client_clear_error(monkeypatch):
         list(encode_pcm_stream(iter([]), 24000, "mp3"))
 
 
-def test_unknown_format_rejected_before_spawning():
+def test_unknown_format_rejected_before_spawning(monkeypatch):
+    """An unsupported format must be rejected (KeyError) before any subprocess is
+    spawned. Stub ffmpeg_binary so it runs even on runners without ffmpeg."""
+    import pocket_tts_openai.audio_codecs as ac
+
+    monkeypatch.setattr(ac, "ffmpeg_binary", lambda: "/usr/bin/ffmpeg")
     with pytest.raises(KeyError):
         _ = list(encode_pcm_stream(iter([b"x"]), 24000, "wav"))

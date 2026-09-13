@@ -3,14 +3,23 @@
 from __future__ import annotations
 
 import io
+import shutil
 import struct
 from threading import Thread
 
+import pytest
 from fastapi.testclient import TestClient
 
 from pocket_tts_openai.server import create_app
 
 S16LE = struct.Struct("<h")
+
+# Real-ffmpeg streaming tests are skipped on runners without it (the mock CI
+# env has no ffmpeg); the route *wiring* is still exercised without ffmpeg by
+# test_compressed_stream_true_routes_through_streaming below.
+requires_ffmpeg = pytest.mark.skipif(
+    shutil.which("ffmpeg") is None, reason="ffmpeg not installed"
+)
 
 
 def _assert_valid_pcm(pcm: bytes) -> None:
@@ -91,10 +100,36 @@ def test_stream_wav_false_identical(client):
 
 
 def test_compressed_stream_true_routes_through_streaming(client, monkeypatch):
-    """stream:true for a compressed format now really streams: the route iterates
-    the ffmpeg streaming generator multiple times server-side (a single-blob
-    buffered response would iterate exactly once), and the audio is byte-identical
-    to the buffered (stream:false) response."""
+    """stream:true + compressed must route via encode_pcm_stream into a chunked
+    StreamingResponse. Uses a fake encoder so mock CI (no ffmpeg) still covers
+    the wiring; the real-ffmpeg byte-parity is asserted by
+    test_compressed_stream_real_output_matches_buffered when ffmpeg exists."""
+    import pocket_tts_openai.routes_speech as rs
+
+    calls: list[tuple[int, str]] = []
+
+    def fake_encode_stream(pcm_iter, sample_rate: int, fmt: str):
+        calls.append((sample_rate, fmt))
+        iter(pcm_iter)  # the route passes the engine's stream generator
+        for n in range(3):
+            yield f"chunk{n}".encode()
+
+    monkeypatch.setattr(rs, "encode_pcm_stream", fake_encode_stream)
+    r = client.post(
+        "/v1/audio/speech",
+        json={"input": "hi", "response_format": "mp3", "stream": True},
+    )
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("audio/mpeg")
+    assert calls == [(24000, "mp3")]
+    assert r.content == b"chunk0chunk1chunk2"
+
+
+@requires_ffmpeg
+def test_compressed_stream_real_output_matches_buffered(client, monkeypatch):
+    """End-to-end route+ffmpeg: the streamed compressed output is byte-identical
+    to the buffered (stream:false) response, and the server iterated the
+    streaming generator more than once (not a single buffered blob)."""
     import pocket_tts_openai.routes_speech as rs
 
     r_static = client.post(
@@ -111,14 +146,10 @@ def test_compressed_stream_true_routes_through_streaming(client, monkeypatch):
             yield chunk
 
     monkeypatch.setattr(rs, "encode_pcm_stream", counting)
-    with client.stream(
-        "POST",
+    body = client.post(
         "/v1/audio/speech",
         json={"input": "hi", "response_format": "mp3", "stream": True},
-    ) as r:
-        assert r.status_code == 200
-        assert r.headers["content-type"].startswith("audio/mpeg")
-        body = b"".join(r.iter_bytes())
+    ).content
     assert len(yields) > 1, "expected an incremental ffmpeg stream, got one blob"
     assert body == r_static.content
 
@@ -147,6 +178,7 @@ def test_stream_unknown_voice_400_eager_validation(client):
         assert r.json()["error"]["type"] == "invalid_request_error", fmt
 
 
+@requires_ffmpeg
 def test_compressed_stream_disconnect_releases_lock(fake_model, config, engine):
     """A client that abandons a streamed mp3 mid-way must still release the
     generation lock (kill ffmpeg + close the engine stream on GeneratorExit)."""
@@ -167,6 +199,7 @@ def test_compressed_stream_disconnect_releases_lock(fake_model, config, engine):
     _assert_valid_pcm(r.content)
 
 
+@requires_ffmpeg
 def test_compressed_stream_opus_timeout_and_locking(fake_model, config, engine):
     """Opus streams as valid Ogg too, and a fully-consumed compressed stream
     reports the same audio duration as the buffered one."""
