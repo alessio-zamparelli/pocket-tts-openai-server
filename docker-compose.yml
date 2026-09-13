@@ -13,19 +13,19 @@ services:
       - "8080:8000"
     environment:
       # Optional knobs (see README "Configuration (env)"). API key left unset.
-      POCKET_TTS_HOST: 0.0.0.0
-      POCKET_TTS_PORT: "8000"
+      - POCKET_TTS_HOST=0.0.0.0
+      - POCKET_TTS_PORT=8000
       # Uncomment to pre-warm some voices at startup:
-      # POCKET_TTS_WARMUP_VOICES: alba,charles
+      # - POCKET_TTS_WARMUP_VOICES=alba,charles
       # Memory: quantize to int8 -> ~62% less resident RAM, ~27% faster
       # (FBGEMM/x86 AVX2), no quality change. Biggest lever besides idle unload.
-      # POCKET_TTS_QUANTIZE: "1"
+      # - POCKET_TTS_QUANTIZE=1
       # Model tier follows the language: base 6-layer per language is the
       # smallest; *_24l variants (french_24l, german_24l, ...) are larger.
-      # POCKET_TTS_LANGUAGE: english
+      # - POCKET_TTS_LANGUAGE=english
       # Evict the model from RAM after this many idle seconds; 0 keeps resident.
-      # POCKET_TTS_IDLE_UNLOAD_S: "300"
-      # POCKET_TTS_IDLE_POLL_S: "30"
+      # - POCKET_TTS_IDLE_UNLOAD_S=300
+      # - POCKET_TTS_IDLE_POLL_S=30
     volumes:
       # Persistent model weights + voice registry across restarts.
       - tts-data:/data
