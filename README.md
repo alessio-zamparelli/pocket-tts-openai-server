@@ -200,6 +200,25 @@ Or `docker compose up -d --build` (see `docker-compose.yml`).
 - **Persistent volume** `/data`: model weights (`HF_HOME=/data/hf`) + the
   voice registry (`POCKET_TTS_CACHE_DIR=/data/cache` → `/data/cache/voices`).
   Mount it so weights are downloaded once and cloned voices survive restarts.
+- **Ships the pre-cloned Italian voice `mtc`**: the image seeds the registry
+  (`/data/cache/voices`) from the repo `voices/` dir, so a fresh container
+  already lists `mtc` in `GET /v1/voices` — no runtime clone needed. To serve
+  it, run with the matching model language:
+
+  ```sh
+  docker run --rm -p 8080:8000 -e POCKET_TTS_LANGUAGE=italian_24l \
+    -v tts-data:/data pocket-tts-openai
+  # GET  http://localhost:8080/v1/voices     -> lists "mtc" (custom, it)
+  # POST http://localhost:8080/v1/audio/speech \
+  #      -d '{"model":"tts-1","voice":"mtc","input":"Ciao"}'
+  ```
+
+  `italian_24l` weights come from the **gated** `kyutai/pocket-tts` repo: on a
+  cold `/data` volume the container downloads them at first boot, so pass
+  `-e HF_TOKEN=...` (or mount a volume that already has them cached under
+  `/data/hf`). The voice file itself is our own cloned state (10 MB) and is
+  always in the image — no token needed for the voice, only for the model
+  weights.
 - **No CUDA**: `torch` resolves from the PyTorch **CPU** wheel index via
   `uv.lock` (`[tool.uv.sources]`); nothing NVIDIA layers into the image.
 - **ffmpeg included**: the runtime image installs `ffmpeg`, so the compressed

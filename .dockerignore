@@ -25,3 +25,10 @@ htmlcov/
 # Test / docs artifacts
 tests/
 *.log
+
+# Local-only voice-clone experiment data: the patient corpus (480 licensed
+# recordings) and scratch outputs (cloned voices, generated samples, proofs).
+# These must never enter the image. The pre-cloned voice that the image DOES
+# ship lives in the repo `voices/` dir instead.
+audio files/
+artifacts/

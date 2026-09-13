@@ -67,8 +67,16 @@ COPY --from=builder /app/.venv /app/.venv
 
 # Non-root runtime user; /data must stay writable for model weights + voices.
 RUN useradd --create-home --uid 10001 tts \
-    && mkdir -p /data/cache /data/hf \
-    && chown -R tts:tts /data
+    && mkdir -p /data/cache/voices /data/hf
+
+# Seed the voice registry with the pre-cloned Italian voice `mtc` (see the
+# repo `voices/` dir). Docker copies this into the named volume on first
+# mount, so a fresh container already lists `mtc` in GET /v1/voices with no
+# runtime clone.
+COPY voices/registry.json /data/cache/voices/registry.json
+COPY voices/mtc.safetensors /data/cache/voices/mtc.safetensors
+
+RUN chown -R tts:tts /data
 
 # Persistent volume: model weights (HF_HOME=/data/hf) + voice registry
 # (POCKET_TTS_CACHE_DIR=/data/cache -> /data/cache/voices). Mount it to avoid
