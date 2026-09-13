@@ -11,3 +11,14 @@ __pycache__/
 
 # Local model/voice caches
 .cache/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Clone experiment scratch (sample audio, cloned voice states, scratch scripts)
+artifacts/
+
+# Raw corpus dropped into the workspace for voice cloning (480 licensed recordings)
+audio files/
