@@ -111,20 +111,26 @@ plus a `registry.json` index, and are re-loaded from disk at every boot — they
 survive restarts without re-cloning. The voice is served by its id like any
 other (a custom voice name is just another valid `voice` value).
 
-Example — serve the previously cloned Italian voice `mtc` (saved from the
-`audio files/` corpus):
+The repo ships one pre-cloned Italian voice, **`jarvis1`** (`voices/`, ~68 MB):
+cloned from 5 `audio files/` corpus clips (`mFB_S7_3_Italian.wav.mp3`,
+`mFB_S9_1_Italian.wav.mp3`, `mFB_S45_5_Italian.wav.mp3`,
+`mFF_S1_6_Italian.wav.mp3`, `mFF_S20_2_Italian.wav.mp3`) joined into a single
+~27.5 s conditioning prompt with 0.5 s of silence between them, then encoded
+once via pocket-tts `get_state_for_audio_prompt`. It is served by the API and
+is the voice baked into the container image (see “Container (Docker)”).
+
+Example — serve `jarvis1` (Italian, needs `italian_24l`):
 
 ```sh
 POCKET_TTS_LANGUAGE=italian_24l uv run python -m pocket_tts_openai.server
-```
-
-```sh
+# then, in another shell:
 curl -s localhost:8000/v1/audio/speech -H 'content-type: application/json' \
-  -d '{"model":"tts-1","voice":"mtc","input":"Questa è la voce salvata."}' -o mtc.wav
+  -d '{"model":"tts-1","voice":"jarvis1","input":"Questa è la voce di Jarvis."}' -o jarvis1.wav
 ```
 
-The cloned voice only makes sense with the matching model language it was encoded
-from (`italian_24l` here). Pre-encode it at boot with `POCKET_TTS_WARMUP_VOICES=mtc`.
+A cloned voice only makes sense with the matching model language it was encoded
+from (`italian_24l`). Pre-encode it at boot with `POCKET_TTS_WARMUP_VOICES=jarvis1`.
+To clone your own voice, `POST /v1/voices` (above) with a 16-bit PCM WAV.
 Uploads accepted as `.mp3`/`.flac` need `soundfile` at runtime (not installed);
 the zero-dependency workaround is to upload a 16-bit PCM WAV.
 
