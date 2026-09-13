@@ -21,17 +21,17 @@ services:
       # TTS language and model tier. The base 6-layer model per language is the
       # smallest available; *_24l variants (english_2026-04_24l, french_24l,
       # german_24l, spanish_24l) are larger quality upgrades.
-      # - POCKET_TTS_LANGUAGE=english
+      - POCKET_TTS_LANGUAGE=italian
       # OpenAI voice alias used when a request omits "voice".
       # - POCKET_TTS_DEFAULT_VOICE=alloy
       # Extra alias->voice mapping, comma-separated: alias1=voice1,alias2=voice2
       # (merges over the built-in catalog).
-      # - POCKET_TTS_VOICE_MAP=
+      - POCKET_TTS_VOICE_MAP=eponine
       # Comma-separated voices to pre-encode at startup (warms the model cache).
-      # - POCKET_TTS_WARMUP_VOICES=alba,charles
+      - POCKET_TTS_WARMUP_VOICES=eponine
       # int8 weights: ~62% less resident RAM, ~27% faster on x86 (FBGEMM/AVX2),
       # no quality change. Biggest memory lever besides idle eviction.
-      # - POCKET_TTS_QUANTIZE=1
+      - POCKET_TTS_QUANTIZE=1
       # LRU voice-state cache size (per cloned voice, not per model copy).
       # - POCKET_TTS_MAX_CACHED_VOICES=32
       # Base dir for the cloned-voice registry. Image default points it into the
@@ -44,6 +44,13 @@ services:
       # - POCKET_TTS_IDLE_UNLOAD_S=300
       # Idle-eviction watchdog poll interval (seconds); only used when unload>0.
       # - POCKET_TTS_IDLE_POLL_S=30
+      # Load shedding: reject with an OpenAI 429 when more than this many
+      # requests are already inside the critical path (encode+wait+generate).
+      # 0 = unlimited (default).
+      # - POCKET_TTS_MAX_WAITING=0
+      # Max seconds a request may wait for the generation lock before a 429;
+      # 0 = wait forever (default). Pair with MAX_WAITING to cap load cleanly.
+      # - POCKET_TTS_QUEUE_TIMEOUT_S=0
       # If set, "Authorization: Bearer <key>" is required on every /v1/* request
       # (audio speech, models, voices). Strongly recommended for public deploys.
       # - POCKET_TTS_API_KEY=change-me

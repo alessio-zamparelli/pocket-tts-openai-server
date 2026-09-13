@@ -74,12 +74,55 @@ def test_empty_input_400(client):
     assert r.json()["error"]["type"] == "invalid_request_error"
 
 
-def test_unsupported_format_400(client):
+def test_invalid_format_422(client):
+    """'ogg' is not in the response_format Literal -> FastAPI 422 validation."""
+    r = client.post(
+        "/v1/audio/speech", json={"input": "hi", "response_format": "ogg"}
+    )
+    assert r.status_code == 422
+
+
+def _stub_encode(monkeypatch) -> None:
+    """Route tests never depend on ffmpeg: the codec is stubbed here (the real
+    ffmpeg path is verified end-to-end against the live API)."""
+    import pocket_tts_openai.routes_speech as rs
+
+    def fake_encode(pcm: bytes, sample_rate: int, fmt: str) -> bytes:
+        return b"ENCODED:" + fmt.encode()
+
+    monkeypatch.setattr(rs, "encode_pcm", fake_encode)
+
+
+def test_speech_compressed_formats_via_ffmpeg(client, monkeypatch):
+    """mp3/opus/aac/flac routes return whole-file encoded audio with the right
+    content-type and filename."""
+    _stub_encode(monkeypatch)
+    for fmt, media in (
+        ("mp3", "audio/mpeg"),
+        ("opus", "audio/ogg"),
+        ("aac", "audio/aac"),
+        ("flac", "audio/x-flac"),
+    ):
+        r = client.post(
+            "/v1/audio/speech",
+            json={"model": "tts-1", "input": "hi", "voice": "alloy", "response_format": fmt},
+        )
+        assert r.status_code == 200, fmt
+        assert r.headers["content-type"].startswith(media), fmt
+        assert r.headers["content-disposition"] == f"attachment; filename=speech.{fmt}", fmt
+        assert r.content == b"ENCODED:" + fmt.encode(), fmt
+
+
+def test_compressed_format_missing_ffmpeg_400(client, monkeypatch):
+    """Without ffmpeg the compressed formats surface a clear 400, not a 500."""
+    import pocket_tts_openai.audio_codecs as ac
+
+    monkeypatch.setattr(ac, "ffmpeg_binary", lambda: None)
     r = client.post(
         "/v1/audio/speech", json={"input": "hi", "response_format": "mp3"}
     )
     assert r.status_code == 400
-    assert "mp3" in r.json()["error"]["message"]
+    assert "ffmpeg" in r.json()["error"]["message"]
 
 
 def test_unknown_voice_400(client):

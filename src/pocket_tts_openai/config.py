@@ -35,6 +35,16 @@ def _env_int(env: dict[str, str], key: str, default: int) -> int:
         raise ValueError(f"{key} must be an integer, got: {raw!r}") from None
 
 
+def _env_float(env: dict[str, str], key: str, default: float) -> float:
+    raw = env.get(key, "")
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        raise ValueError(f"{key} must be a number, got: {raw!r}") from None
+
+
 @dataclass(frozen=True)
 class Config:
     host: str = "127.0.0.1"
@@ -50,6 +60,8 @@ class Config:
     max_upload_mb: int = 25
     idle_unload_s: int = 300  # evict the model to free RAM after this much idle; 0 = off
     idle_poll_s: int = 30  # watchdog cadence (only when idle_unload_s > 0)
+    max_waiting: int = 0  # 429 above this many in-flight requests; 0 = unlimited
+    queue_timeout_s: float = 0.0  # max seconds to wait for the gen lock; 0 = wait forever
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "Config":
@@ -74,4 +86,6 @@ class Config:
             max_upload_mb=_env_int(env, "POCKET_TTS_MAX_UPLOAD_MB", 25),
             idle_unload_s=_env_int(env, "POCKET_TTS_IDLE_UNLOAD_S", 300),
             idle_poll_s=_env_int(env, "POCKET_TTS_IDLE_POLL_S", 30),
+            max_waiting=_env_int(env, "POCKET_TTS_MAX_WAITING", 0),
+            queue_timeout_s=_env_float(env, "POCKET_TTS_QUEUE_TIMEOUT_S", 0.0),
         )

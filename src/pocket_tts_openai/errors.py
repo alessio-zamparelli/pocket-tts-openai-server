@@ -32,6 +32,11 @@ def unavailable(message: str) -> OpenAIError:
     return OpenAIError(message, status=503, type_="api_error", code="unavailable")
 
 
+def rate_limited(message: str) -> OpenAIError:
+    """Load-shedding / queue timeout (engine: max_waiting, queue_timeout_s)."""
+    return OpenAIError(message, status=429, type_="rate_limit_error", code="rate_limited")
+
+
 def invalid_api_key(message: str) -> OpenAIError:
     return OpenAIError(message, status=401, type_="invalid_request_error", code="invalid_api_key")
 

@@ -31,7 +31,7 @@ Body (JSON):
 | `model` | string | `tts-1` | any of `tts-1`, `tts-1-hd`, `gpt-4o-mini-tts` |
 | `input` | string | — | text to synthesize (required, non-empty) |
 | `voice` | string | `alloy` | OpenAI alias, Kyutai catalog voice, custom voice, `https://`/`hf://`/path |
-| `response_format` | string | `wav` | `wav` \| `pcm` (compressed formats pending M2) |
+| `response_format` | string | `wav` | `wav` \| `pcm` \| `mp3` \| `opus` \| `aac` \| `flac` (compressed need ffmpeg; see below) |
 | `stream` | bool | `false` | **private extension** — chunked transfer for `wav`/`pcm`. Ignored (buffered) for compressed formats |
 | `speed` | float | — | accepted, ignored |
 | `instructions` | string | — | accepted, ignored |
@@ -45,6 +45,14 @@ Body (JSON):
   incrementally in ffplay/VLC and most browsers.
 
 `Content-Disposition` is `attachment; filename=speech.wav` (or `.pcm`).
+
+Compressed formats (`mp3`/`opus`/`aac`/`flac`) are encoded through **ffmpeg**
+(`audio_codecs.py`) and returned as a single whole-file response with the
+OpenAI content types (`audio/mpeg`, `audio/ogg`, `audio/aac`, `audio/x-flac`).
+`stream: true` is ignored for them (ffmpeg needs the complete PCM before it
+can encode). Without `ffmpeg` on PATH they return a clear 400; **the Docker
+image ships ffmpeg**, so they just work there — locally run
+`apt-get install ffmpeg` (or your package manager).
 
 ### `GET /v1/models` · `GET /health`
 
@@ -130,6 +138,8 @@ eviction (previous section) an idle process holds ~0 MB of model.
 | `POCKET_TTS_WARMUP_VOICES` | — | comma-separated voices to pre-encode at boot |
 | `POCKET_TTS_IDLE_UNLOAD_S` | `300` | evict the model from RAM after this many idle seconds; `0` disables |
 | `POCKET_TTS_IDLE_POLL_S` | `30` | idle-eviction watchdog poll interval (seconds) |
+| `POCKET_TTS_MAX_WAITING` | `0` | load shedding: HTTP 429 when more than this many requests are in-flight (encode+wait+generate); `0` = unlimited |
+| `POCKET_TTS_QUEUE_TIMEOUT_S` | `0` | max seconds a request waits for the generation lock before a 429; `0` = wait forever |
 | `POCKET_TTS_API_KEY` | — | if set, `Bearer <key>` required on `/v1/*` |
 | `POCKET_TTS_CACHE_DIR` | `~/.cache/pocket_tts` | base for cloned voice registry |
 | `POCKET_TTS_MAX_UPLOAD_MB` | `25` | max cloned-voice upload size |
@@ -157,6 +167,9 @@ Or `docker compose up -d --build` (see `docker-compose.yml`).
   Mount it so weights are downloaded once and cloned voices survive restarts.
 - **No CUDA**: `torch` resolves from the PyTorch **CPU** wheel index via
   `uv.lock` (`[tool.uv.sources]`); nothing NVIDIA layers into the image.
+- **ffmpeg included**: the runtime image installs `ffmpeg`, so the compressed
+  `/v1/audio/speech` formats (`mp3`/`opus`/`aac`/`flac`) work out of the box
+  (Debian's build ships the libmp3lame + libopus encoders).
 - The bind host defaults to `0.0.0.0` inside the container (port `8000`);
   override with `POCKET_TTS_HOST`/`POCKET_TTS_PORT`.
 - Model weights download on first boot (~430 MB); warm the cache beforehand

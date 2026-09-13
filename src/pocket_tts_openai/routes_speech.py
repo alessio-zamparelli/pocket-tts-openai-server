@@ -9,15 +9,17 @@ from fastapi import Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from .audio_codecs import MEDIA_TYPES, encode_pcm
 from .config import Config
-from .engine import TTSEngine, pcm_to_wav, streaming_wav_header
-from .errors import OpenAIError, invalid_request, unavailable
+from .engine import RateLimited, TTSEngine, pcm_to_wav, streaming_wav_header
+from .errors import OpenAIError, invalid_request, rate_limited, unavailable
 
 AudioFormat = Literal["wav", "pcm", "mp3", "opus", "aac", "flac"]
 
-# Formats shippable in M1/M2. mp3/opus/aac/flac need ffmpeg (M2): 400 until then.
-SUPPORTED_FORMATS = ("wav", "pcm")
-PLANNED_FORMATS = ("mp3", "opus", "aac", "flac")
+# Supported response formats. wav/pcm are stdlib; mp3/opus/aac/flac are
+# encoded through ffmpeg (audio_codecs.py) and 400 with a clear message when
+# ffmpeg is missing (the Docker image ships it, so they just work there).
+SUPPORTED_FORMATS = ("wav", "pcm", "mp3", "opus", "aac", "flac")
 
 # All OpenAI TTS model aliases map to the single pocket-tts model.
 MODEL_ALIASES: tuple[str, ...] = ("tts-1", "tts-1-hd", "gpt-4o-mini-tts")
@@ -83,8 +85,13 @@ def speech(req: SpeechRequest, request: Request) -> Response:
             "a custom voice, an https:// URL or an hf:// reference."
         )
 
-    # streaming path (wav/pcm)
-    if req.stream and req.response_format in SUPPORTED_FORMATS:
+    # streaming path (wav/pcm only -- lossy formats are buffered whole-file)
+    if req.stream and req.response_format in ("wav", "pcm"):
+        # Admit-or-429 before headers so overload doesn't kill a stream midway.
+        try:
+            engine.check_capacity()
+        except RateLimited as exc:
+            raise rate_limited(str(exc)) from None
         filename = "speech.pcm" if req.response_format == "pcm" else "speech.wav"
         media_type = "audio/pcm" if req.response_format == "pcm" else "audio/wav"
         gen = _stream_speech_pcm if req.response_format == "pcm" else _stream_speech_wav
@@ -101,10 +108,18 @@ def speech(req: SpeechRequest, request: Request) -> Response:
         pcm = engine.generate_pcm(req.input, req.voice)
     except ValueError:
         raise _speech_error() from None
+    except RateLimited as exc:
+        raise rate_limited(str(exc)) from None
     if req.response_format == "pcm":
         body, filename, media_type = pcm, "speech.pcm", "audio/pcm"
-    else:
+    elif req.response_format == "wav":
         body, filename, media_type = pcm_to_wav(pcm, engine.sample_rate), "speech.wav", "audio/wav"
+    else:
+        try:
+            body = encode_pcm(pcm, engine.sample_rate, req.response_format)
+        except RuntimeError as exc:
+            raise invalid_request(str(exc)) from exc
+        filename, media_type = f"speech.{req.response_format}", MEDIA_TYPES[req.response_format]
     return Response(
         content=body,
         media_type=media_type,

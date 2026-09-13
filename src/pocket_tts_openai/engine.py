@@ -25,6 +25,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, cast
+from uuid import uuid4
 
 import numpy as np
 from typing_extensions import Protocol, runtime_checkable
@@ -36,6 +37,12 @@ from .voices import resolve_voice
 logger = logging.getLogger(__name__)
 
 PCM_DTYPE = np.dtype("<i2")
+
+
+class RateLimited(Exception):
+    """Load-shedding signal: the generation queue is full (``max_waiting``) or a
+    request waited past ``queue_timeout_s`` for the generation lock. Routes map
+    this to an OpenAI-shaped HTTP 429."""
 
 
 @runtime_checkable
@@ -184,6 +191,8 @@ class TTSEngine:
         self._gen_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._voice_states: OrderedDict[str, object] = OrderedDict()
+        # In-flight slow-path encodes keyed by resolved voice (single-flight).
+        self._encode_pending: dict[str, threading.Event] = {}
         # Idle-eviction bookkeeping.
         self._last_activity = time.monotonic()
         self._reload_lock = threading.Lock()
@@ -298,6 +307,11 @@ class TTSEngine:
 
         Captures the model via :meth:`ensure_loaded` so a concurrent eviction
         can't null the object under an in-flight encode.
+
+        The slow path (download + prompt encoding) runs outside all locks but is
+        single-flight per resolved voice: concurrent misses for the same voice
+        wait on the first encoder instead of hammering the stateful batch=1
+        model in parallel or duplicating a network download.
         """
         model = self.ensure_loaded()
         self.touch()
@@ -306,16 +320,42 @@ class TTSEngine:
             if resolved in self._voice_states:
                 self._voice_states.move_to_end(resolved)
                 return self._voice_states[resolved], resolved
-        # Slow path (download + prompt encoding) happens outside all locks.
-        t0 = time.perf_counter()
-        state = model.get_state_for_audio_prompt(resolved)
-        logger.info("voice %r encoded in %.2fs", resolved, time.perf_counter() - t0)
-        with self._state_lock:
-            self._voice_states[resolved] = state
-            self._voice_states.move_to_end(resolved)
-            while len(self._voice_states) > self._config.max_cached_voices:
-                self._voice_states.popitem(last=False)
-        return state, resolved
+
+        # Single-flight: claim the in-flight encode for this key, or wait for
+        # the current encoder to finish and reuse its cached result.
+        while True:
+            with self._state_lock:
+                pending = self._encode_pending.get(resolved)
+                if pending is None:
+                    event = threading.Event()
+                    self._encode_pending[resolved] = event
+                    break
+            event = pending
+            event.wait()  # another thread is encoding this voice right now
+            with self._state_lock:
+                if resolved in self._voice_states:
+                    self._voice_states.move_to_end(resolved)
+                    return self._voice_states[resolved], resolved
+            # The encoder's result was already pruned (only reachable when
+            # max_cached_voices forced it out); loop to become the next
+            # encoder. Practically unreachable for real cache sizes.
+        try:
+            t0 = time.perf_counter()
+            state = model.get_state_for_audio_prompt(resolved)
+            logger.info("voice %r encoded in %.2fs", resolved, time.perf_counter() - t0)
+            with self._state_lock:
+                self._voice_states[resolved] = state
+                self._voice_states.move_to_end(resolved)
+                while len(self._voice_states) > self._config.max_cached_voices:
+                    self._voice_states.popitem(last=False)
+            return state, resolved
+        finally:
+            # Wake waiters, then drop the memo so a later miss re-encodes. Set
+            # before pop: an arrival racing the pop either finds the fresh entry
+            # above or (rare) starts its own encode.
+            with self._state_lock:
+                event.set()
+                self._encode_pending.pop(resolved, None)
 
     def cached_voices(self) -> frozenset[str]:
         """Names/keys currently resident in the LRU voice-state cache."""
@@ -356,7 +396,15 @@ class TTSEngine:
         # Serialize with generation: encoding touches the stateful batch=1 model.
         with self._gen_lock:
             state = model.get_state_for_audio_prompt(str(audio_path))
-            self._exporter()(state, dest)
+            # Export to a temp name then atomically move into place so a crash
+            # mid-export can't leave a truncated/corrupt .safetensors. Stale
+            # temps are swept on the next registry load.
+            tmp = registry.directory / f".{name}.{uuid4().hex}.safetensors.tmp"
+            try:
+                self._exporter()(state, tmp)
+                tmp.replace(dest)
+            finally:
+                tmp.unlink(missing_ok=True)
         logger.info(
             "cloned voice %r -> %s in %.2fs", name, dest, time.perf_counter() - t0
         )
@@ -382,20 +430,56 @@ class TTSEngine:
 
     # -- generation ---------------------------------------------------------
 
+    def check_capacity(self) -> None:
+        """Pre-flight admission check for streaming: raise :class:`RateLimited`
+        when the queue is already at ``max_waiting``. Called before response
+        headers are sent so overload surfaces as a clean HTTP 429 instead of a
+        chunked stream that dies midway.
+        """
+        self._reject_if_full()
+
+    def _reject_if_full(self) -> None:
+        """Reject a new request when more than ``max_waiting`` requests are
+        already inside the critical path (encode + wait + generate)."""
+        limit = self._config.max_waiting
+        if limit > 0 and self.stats.waiting > limit:
+            raise RateLimited(
+                f"Too many concurrent requests (queue depth {self.stats.waiting}, "
+                f"limit {limit}); retry later."
+            )
+
+    def _acquire_gen_lock(self) -> None:
+        """Acquire the generation lock, honoring the optional queue timeout."""
+        timeout = self._config.queue_timeout_s
+        if timeout > 0:
+            if not self._gen_lock.acquire(timeout=timeout):
+                raise RateLimited(
+                    f"Timed out after {timeout:g}s waiting for the generation queue."
+                )
+        else:
+            self._gen_lock.acquire()
+
     def generate_pcm(self, text: str, voice: str) -> bytes:
         """Serialize on the global lock; return raw mono s16le PCM at 24 kHz.
 
         Captures the (possibly just-reloaded) model up front so a wake-up runs
-        on the same instance that encoded the voice state.
+        on the same instance that encoded the voice state. The queue guard
+        covers encode + wait + generate so load shedding (``max_waiting``)
+        counts the whole in-flight window, not just time on the lock.
         """
         self.touch()
         guard = _QueueGuard(self)
-        model = self.ensure_loaded()
-        state, resolved = self.voice_state(voice)
-        with guard, self._gen_lock:
-            t0 = time.perf_counter()
-            audio = model.generate_audio(state, text)
-            elapsed = time.perf_counter() - t0
+        with guard:
+            self._reject_if_full()
+            model = self.ensure_loaded()
+            state, resolved = self.voice_state(voice)
+            self._acquire_gen_lock()
+            try:
+                t0 = time.perf_counter()
+                audio = model.generate_audio(state, text)
+                elapsed = time.perf_counter() - t0
+            finally:
+                self._gen_lock.release()
         pcm = to_pcm16(audio)
         seconds = len(pcm) / (2 * self.sample_rate)
         self.stats.requests += 1
@@ -416,22 +500,28 @@ class TTSEngine:
         The lock is held for the lifetime of the generator (StreamingResponse
         iterates it in a worker thread). If the consumer abandons the generator
         (client disconnect), the pocket-tts iterator stops being pulled and the
-        lock is released at the generator's close.
+        lock is released at the generator's close. The queue guard likewise
+        spans the whole stream, so capacity is accounted start to finish.
         """
         guard = _QueueGuard(self)
-        model = self.ensure_loaded()
-        self.touch()
-        state, resolved = self.voice_state(voice)
-        with guard, self._gen_lock:
-            t0 = time.perf_counter()
-            audio_seconds = 0.0
+        with guard:
+            self._reject_if_full()
+            model = self.ensure_loaded()
+            self.touch()
+            state, resolved = self.voice_state(voice)
+            self._acquire_gen_lock()
             try:
-                for chunk in model.generate_audio_stream(state, text):
-                    pcm = to_pcm16(chunk)
-                    audio_seconds += len(pcm) / (2 * self.sample_rate)
-                    yield pcm
+                t0 = time.perf_counter()
+                audio_seconds = 0.0
+                try:
+                    for chunk in model.generate_audio_stream(state, text):
+                        pcm = to_pcm16(chunk)
+                        audio_seconds += len(pcm) / (2 * self.sample_rate)
+                        yield pcm
+                finally:
+                    elapsed = time.perf_counter() - t0
             finally:
-                elapsed = time.perf_counter() - t0
+                self._gen_lock.release()
         self.stats.requests += 1
         self.stats.audio_seconds += audio_seconds
         self.stats.generate_seconds += elapsed

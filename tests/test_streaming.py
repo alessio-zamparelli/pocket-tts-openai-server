@@ -90,14 +90,23 @@ def test_stream_wav_false_identical(client):
     assert r_static.content == r_stream_false.content
 
 
-def test_compressed_format_ignores_stream(client):
-    """stream is ignored (buffered) for as-yet-unsupported compressed formats: 400."""
-    r = client.post(
+def test_compressed_format_ignores_stream(client, monkeypatch):
+    """stream is ignored (buffered whole-file) for compressed formats: ffmpeg
+    needs the complete PCM before it can encode, so there is no chunked path."""
+    import pocket_tts_openai.routes_speech as rs
+
+    monkeypatch.setattr(rs, "encode_pcm", lambda pcm, sr, fmt: b"ENCODED:" + b"mp3")
+    r_static = client.post(
+        "/v1/audio/speech", json={"input": "hi", "response_format": "mp3"}
+    )
+    r_stream = client.post(
         "/v1/audio/speech",
         json={"input": "hi", "response_format": "mp3", "stream": True},
     )
-    assert r.status_code == 400
-    assert "mp3" in r.json()["error"]["message"]
+    assert r_static.status_code == 200
+    assert r_stream.status_code == 200
+    assert r_stream.headers["content-type"].startswith("audio/mpeg")
+    assert r_stream.content == r_static.content  # stream ignored -> identical
 
 
 def test_concurrent_streams_serialize_but_do_not_overlap(fake_model, config, engine):

@@ -154,3 +154,18 @@ def test_load_ignores_corrupt_registry(tmp_path: Path):
     reg = VoiceRegistry(directory=voices_dir)
     reg.load()
     assert reg.names() == set()
+
+
+def test_load_sweeps_stale_tmp_files(tmp_path: Path):
+    """Orphaned ``.safetensors.tmp`` files (a crash mid-clone) are removed on
+    the next load so they never linger in /data."""
+    voices_dir = tmp_path / "voices"
+    reg = VoiceRegistry(directory=voices_dir)
+    stale = reg.directory / ".mario.deadbeef.safetensors.tmp"
+    stale.write_bytes(b"partial")
+    # a real voice file is preserved alongside the sweep
+    dest = reg.directory / "luigi.safetensors"
+    dest.write_bytes(b"real")
+    reg.load()
+    assert not stale.exists()
+    assert dest.exists()

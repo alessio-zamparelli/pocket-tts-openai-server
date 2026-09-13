@@ -70,7 +70,9 @@ class VoiceRegistry:
     # -- CRUD ----------------------------------------------------------------
 
     def load(self) -> None:
-        """Read registry.json (tolerates a missing file)."""
+        """Read registry.json (tolerates a missing file) and sweep leftover
+        ``*.safetensors.tmp`` files from crashes mid-clone."""
+        self._sweep_tmp()
         self._voices.clear()
         if not self.registry_path.exists():
             return
@@ -111,6 +113,15 @@ class VoiceRegistry:
         return voice
 
     # -- internals -----------------------------------------------------------
+
+    def _sweep_tmp(self) -> None:
+        """Remove orphaned ``.safetensors.tmp`` files left by a crash mid-clone
+        (engine.clone_voice writes atomically via temp + ``os.replace``)."""
+        for p in self.directory.glob("*.safetensors.tmp"):
+            try:
+                p.unlink()
+            except OSError:
+                logger.warning("could not remove stale temp file %s", p)
 
     def _flush(self) -> None:
         """Atomically rewrite registry.json."""

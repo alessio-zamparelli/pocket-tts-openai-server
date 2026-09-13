@@ -45,9 +45,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 ###############################################################################
 FROM python:3.14-slim AS runtime
 
-# OpenMP runtime needed by torch (CPU) for multithreading.
+# OpenMP runtime needed by torch (CPU) for multithreading, plus ffmpeg for the
+# compressed /v1/audio/speech formats (mp3/opus/aac/flac). Debian ships ffmpeg
+# with the libmp3lame and libopus encoders; without it those formats return a
+# clear 400 (wav/pcm stay stdlib-only).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libgomp1 \
+    && apt-get install -y --no-install-recommends libgomp1 ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Reuse the system Python across stages; put the app venv on PATH.
